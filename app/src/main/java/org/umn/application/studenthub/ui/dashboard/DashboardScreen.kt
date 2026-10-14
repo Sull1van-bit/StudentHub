@@ -40,6 +40,8 @@ import org.umn.application.studenthub.ui.dashboard.components.TodayScheduleCard
 import org.umn.application.studenthub.ui.navigation.Screen
 import org.umn.application.studenthub.ui.theme.StudentHubTheme
 
+import org.umn.application.studenthub.ui.localization.lString
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
@@ -55,12 +57,12 @@ fun DashboardScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Halo, ${uiState.userName}!",
+                            text = lString("Halo, ${uiState.userName}!", "Hello, ${uiState.userName}!"),
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Ringkasan Hari Ini",
+                            text = lString("Ringkasan Hari Ini", "Today's Summary"),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onBackground
@@ -77,7 +79,7 @@ fun DashboardScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Notifications,
-                            contentDescription = "Notifikasi",
+                            contentDescription = lString("Notifikasi", "Notifications"),
                             tint = MaterialTheme.colorScheme.onBackground
                         )
                     }

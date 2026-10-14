@@ -49,4 +49,14 @@ class FinanceStore(private val read: () -> String?, private val write: (String) 
         })
         transactions = updated
     }
+
+    fun delete(id: String) {
+        val updated = transactions.filterNot { it.id == id }
+        if (database != null) database!!.deleteTransaction(id)
+        else write(updated.joinToString("\n") { entry ->
+            listOf(entry.id, entry.title, entry.amount.toString(), entry.category, entry.income.toString(), entry.date)
+                .joinToString("\t") { URLEncoder.encode(it, "UTF-8") }
+        })
+        transactions = updated
+    }
 }

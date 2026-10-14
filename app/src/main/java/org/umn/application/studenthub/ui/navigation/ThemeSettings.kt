@@ -19,12 +19,18 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import org.umn.application.studenthub.ui.theme.ThemeChoice
 
+import org.umn.application.studenthub.ui.localization.lString
+
 @Composable
 fun ThemeSettings(themeChoice: ThemeChoice, onThemeChange: (ThemeChoice) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Tampilan", style = MaterialTheme.typography.titleMedium)
+        Text(lString("Tampilan", "Appearance"), style = MaterialTheme.typography.titleMedium)
         Column(Modifier.selectableGroup()) {
-            listOf(ThemeChoice.LIGHT to "Terang", ThemeChoice.DARK to "Gelap", ThemeChoice.SYSTEM to "Ikuti perangkat").forEach { (choice, label) ->
+            listOf(
+                ThemeChoice.LIGHT to lString("Terang", "Light"),
+                ThemeChoice.DARK to lString("Gelap", "Dark"),
+                ThemeChoice.SYSTEM to lString("Ikuti perangkat", "System default")
+            ).forEach { (choice, label) ->
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("theme-${choice.storageValue}")
                         .selectable(selected = themeChoice == choice, role = Role.RadioButton, onClick = { onThemeChange(choice) }),

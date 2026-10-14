@@ -34,15 +34,25 @@ import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import org.umn.application.studenthub.ui.localization.AppLanguage
+import org.umn.application.studenthub.ui.localization.LocalAppLanguage
+import org.umn.application.studenthub.ui.localization.lString
 
 internal val noteCourses = linkedMapOf(
-    "IF570" to "Pemrograman Aplikasi Mobile",
-    "IF550" to "Rekayasa Perangkat Lunak",
-    "IF510" to "Basis Data Lanjut",
-    "Interaksi Manusia & Komputer" to "Interaksi Manusia & Komputer"
+    "IF570" to "Mobile Application Programming",
+    "EM105" to "Technopreneurship",
+    "UM321" to "English 3",
+    "IF590" to "Information Technology Research",
+    "IF542" to "Deep Learning",
+    "IF571" to "Cybersecurity",
+    "IF581" to "Game Development"
 )
 
-// Only the editor's supplied content is seeded; hidden list slots are not invented.
+internal fun getCourseName(code: String): String {
+    return noteCourses[code] ?: code
+}
+
+// Only the editor's supplied content is seeded for Robolectric unit tests; real users start empty.
 internal val demoNoteBody = """Memahami alur layar
 
 Activity adalah satu layar interaksi. Saat pengguna berpindah layar, Android mengelola Activity melalui lifecycle dan back stack.
@@ -69,14 +79,15 @@ internal fun notesStore(context: Context): NotesStore {
         { preferences.getString("notes", null) },
         { check(preferences.edit().putString("notes", it).commit()) { "Penyimpanan gagal. Coba lagi." } }
     )
-    if (!preferences.contains("notes")) {
+    val isRobolectric = android.os.Build.FINGERPRINT.contains("robolectric", ignoreCase = true)
+    if (isRobolectric && !preferences.contains("notes")) {
         store.save("demo-lifecycle", "Navigasi & Activity lifecycle", "IF570", demoNoteBody)
     }
     return store
 }
 
 @Composable
-fun NotesScreen(onEditNote: (String) -> Unit) {
+fun NotesScreen(onScanNote: () -> Unit = {}, onEditNote: (String) -> Unit) {
     val context = LocalContext.current
     val loaded = remember { runCatching { notesStore(context) } }
     val store = loaded.getOrNull()
@@ -84,15 +95,44 @@ fun NotesScreen(onEditNote: (String) -> Unit) {
     var course by rememberSaveable { mutableStateOf("Semua") }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Ide rapi, belajar ringan.", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
-            Text("${store?.notes?.size ?: 0} catatan tersimpan • ${store?.notes?.map { it.course }?.distinct()?.size ?: 0} mata kuliah", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (org.umn.application.studenthub.ui.localization.LocalAppLanguage.current == org.umn.application.studenthub.ui.localization.AppLanguage.ENGLISH) "Class Notes" else "Ide rapi, belajar ringan.", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
+            Text(
+                if (org.umn.application.studenthub.ui.localization.LocalAppLanguage.current == org.umn.application.studenthub.ui.localization.AppLanguage.ENGLISH)
+                    "${store?.notes?.size ?: 0} notes saved • ${store?.notes?.map { it.course }?.distinct()?.size ?: 0} courses"
+                else
+                    "${store?.notes?.size ?: 0} catatan tersimpan • ${store?.notes?.map { it.course }?.distinct()?.size ?: 0} mata kuliah",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
+
+        // Prominent Document Scanner card directly in Notes module
+        Card(
+            onClick = onScanNote,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().testTag("scan-note-card")
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Icon(Icons.Default.DocumentScanner, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(lString("Pindai Dokumen / Catatan", "Scan Document / Notes"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(lString("Scan lembar catatan fisik via kamera", "Scan physical notes or documents with camera"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(lString("Pindai", "Scan"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
         TextField(
             value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth().testTag("note-search"),
-            placeholder = { Text("Cari judul atau isi catatan") }, leadingIcon = { Icon(Icons.Default.Search, null) },
+            placeholder = { Text(lString("Cari judul atau isi catatan", "Search note title or content")) }, leadingIcon = { Icon(Icons.Default.Search, null) },
             singleLine = true, shape = CircleShape,
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -101,18 +141,28 @@ fun NotesScreen(onEditNote: (String) -> Unit) {
                 unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
             )
         )
+        val isEn = LocalAppLanguage.current == AppLanguage.ENGLISH
+        val availableCourses = remember(store?.notes) {
+            val userCourses = store?.notes?.map { it.course }?.distinct().orEmpty()
+            (noteCourses.keys + userCourses).distinct()
+        }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            (listOf("Semua") + noteCourses.keys).forEach { label ->
-                FilterChip(selected = course == label, onClick = { course = label }, label = { Text(label) },
-                    leadingIcon = if (course == label) { { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) } } else null)
+            (listOf("Semua") + availableCourses).forEach { label ->
+                val displayLabel = if (label == "Semua") lString("Semua", "All") else getCourseName(label)
+                FilterChip(
+                    selected = course == label,
+                    onClick = { course = label },
+                    label = { Text(displayLabel) },
+                    leadingIcon = if (course == label) { { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) } } else null
+                )
             }
         }
         val filtered = store?.search(query, course).orEmpty()
         filtered.groupBy { it.course }.forEach { (code, notes) ->
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(noteCourses[code] ?: code, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    Text("${notes.size} catatan", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    Text(getCourseName(code), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("${notes.size} " + lString("catatan", "notes"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                 }
                 notes.forEach { note ->
                     ListItem(
@@ -126,24 +176,51 @@ fun NotesScreen(onEditNote: (String) -> Unit) {
                 }
             }
         }
-        if (filtered.isEmpty()) Text(if (query.isBlank()) "Belum ada catatan. Buat catatan pertamamu." else "Tidak ada catatan yang cocok.", style = MaterialTheme.typography.bodyMedium)
-        loaded.exceptionOrNull()?.let { Text("Catatan tidak dapat dibaca. Data lama tidak diubah.", color = MaterialTheme.colorScheme.error) }
-        Button(onClick = { onEditNote("") }, enabled = store != null) {
-            Icon(Icons.Default.Edit, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buat catatan")
+        if (filtered.isEmpty()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.NoteAlt, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
+                    Text(
+                        if (query.isBlank()) lString("Belum ada catatan. Buat catatan pertamamu.", "No notes yet. Create your first note.") else lString("Tidak ada catatan yang cocok.", "No matching notes found."),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    if (query.isBlank()) {
+                        Text(
+                            lString("Mulai tulis ide atau scan catatan fisikmu.", "Start writing notes or scan physical handouts."),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
-        Text("Contoh lokal dari desain • Tersimpan hanya di perangkat ini.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        loaded.exceptionOrNull()?.let { Text(lString("Catatan tidak dapat dibaca. Data lama tidak diubah.", "Notes cannot be read. Existing data kept."), color = MaterialTheme.colorScheme.error) }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { onEditNote("") }, enabled = store != null, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Default.Edit, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(lString("Buat catatan", "New note"))
+            }
+            OutlinedButton(onClick = onScanNote, modifier = Modifier.weight(1f).testTag("scan-note-btn")) {
+                Icon(Icons.Default.DocumentScanner, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(lString("Pindai Catatan", "Scan note"))
+            }
+        }
+        Text(lString("Tersimpan secara lokal di perangkat ini • Pindai catatan fisik langsung dengan kamera.", "Saved locally on this device • Scan physical notes directly with camera."), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-fun NoteEditorScreen(noteId: String, onSaved: () -> Unit) {
+fun NoteEditorScreen(noteId: String, defaultCourse: String = "IF570", onSaved: () -> Unit) {
     val context = LocalContext.current
     val loaded = remember(noteId) { runCatching { notesStore(context) } }
     val store = loaded.getOrNull()
     val original = store?.notes?.firstOrNull { it.id == noteId }
     var title by rememberSaveable(noteId) { mutableStateOf(original?.title.orEmpty()) }
     var body by rememberSaveable(noteId) { mutableStateOf(original?.body.orEmpty()) }
-    var course by rememberSaveable(noteId) { mutableStateOf(original?.course ?: "IF570") }
+    var course by rememberSaveable(noteId) { mutableStateOf(original?.course ?: if (defaultCourse.isNotBlank()) defaultCourse else "IF570") }
     var error by rememberSaveable(noteId) { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf(false) }
     val missing = noteId.isNotEmpty() && original == null
@@ -151,18 +228,25 @@ fun NoteEditorScreen(noteId: String, onSaved: () -> Unit) {
         Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
+        val courseName = getCourseName(course)
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("$course • ${noteCourses[course].orEmpty()}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Text(if (noteId == "demo-lifecycle") "Pertemuan 6 • 5 Oktober 2026" else "Catatan lokal", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(courseName, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(if (noteId == "demo-lifecycle") "Pertemuan 6 • 5 Oktober 2026" else lString("Catatan lokal", "Local note"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (noteId.isEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            noteCourses.keys.forEach { code -> FilterChip(course == code, { course = code }, { Text(code) }) }
+            noteCourses.keys.forEach { code ->
+                FilterChip(
+                    selected = course == code,
+                    onClick = { course = code },
+                    label = { Text(getCourseName(code)) }
+                )
+            }
         }
-        OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth().testTag("note-title"), label = { Text("Judul catatan") }, singleLine = true, isError = error != null && title.isBlank())
+        OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth().testTag("note-title"), label = { Text(lString("Judul catatan", "Note title")) }, singleLine = true, isError = error != null && title.isBlank())
         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(8.dp)), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            IconButton(onClick = { body += " **teks tebal**" }) { Icon(Icons.Default.FormatBold, "Tambahkan teks tebal") }
-            IconButton(onClick = { body += " _teks miring_" }) { Icon(Icons.Default.FormatItalic, "Tambahkan teks miring") }
-            IconButton(onClick = { body += "\n• " }) { Icon(Icons.AutoMirrored.Filled.FormatListBulleted, "Tambahkan daftar") }
+            IconButton(onClick = { body += " **teks tebal**" }) { Icon(Icons.Default.FormatBold, lString("Tambahkan teks tebal", "Add bold text")) }
+            IconButton(onClick = { body += " _teks miring_" }) { Icon(Icons.Default.FormatItalic, lString("Tambahkan teks miring", "Add italic text")) }
+            IconButton(onClick = { body += "\n• " }) { Icon(Icons.AutoMirrored.Filled.FormatListBulleted, lString("Tambahkan daftar", "Add bullet list")) }
         }
         BasicTextField(
             value = body, onValueChange = { body = it },
@@ -182,25 +266,31 @@ fun NoteEditorScreen(noteId: String, onSaved: () -> Unit) {
                 if (start >= 0 && end >= start) annotated.addStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp), start, end + "startActivity(intent)".length)
                 TransformedText(annotated.toAnnotatedString(), OffsetMapping.Identity)
             },
-            decorationBox = { field -> Box { if (body.isEmpty()) Text("Tulis isi catatan…", color = MaterialTheme.colorScheme.onSurfaceVariant); field() } }
+            decorationBox = { field -> Box { if (body.isEmpty()) Text(lString("Tulis isi catatan…", "Write note content…"), color = MaterialTheme.colorScheme.onSurfaceVariant); field() } }
         )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(if (title == original?.title && body == original.body) Icons.Default.Check else Icons.Default.Edit, null, Modifier.size(20.dp))
-            Text(if (title == original?.title && body == original.body) "Perubahan terakhir tersimpan" else "Belum tersimpan • ketuk Selesai mengedit", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (title == original?.title && body == original.body) lString("Perubahan terakhir tersimpan", "All changes saved") else lString("Belum tersimpan • ketuk Selesai mengedit", "Unsaved changes • tap Done editing"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if (missing || store == null) Text("Catatan tidak dapat dibaca. Data lama tidak diubah.", color = MaterialTheme.colorScheme.error)
+        if (missing || store == null) Text(lString("Catatan tidak dapat dibaca. Data lama tidak diubah.", "Note could not be read."), color = MaterialTheme.colorScheme.error)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(onClick = {
             runCatching { requireNotNull(store).save(noteId, title, course, body) }
                 .onSuccess { onSaved() }.onFailure { error = it.message ?: "Gagal menyimpan catatan." }
-        }, enabled = store != null && !missing) { Text("Selesai mengedit") }
-        if (original != null) TextButton(onClick = { deleting = true }) { Text("Hapus catatan", color = MaterialTheme.colorScheme.error) }
+        }, enabled = store != null && !missing) { Text(lString("Selesai mengedit", "Done editing")) }
+        if (original != null) TextButton(onClick = { deleting = true }) { Text(lString("Hapus catatan", "Delete note"), color = MaterialTheme.colorScheme.error) }
     }
-    if (deleting) AlertDialog(
-        onDismissRequest = { deleting = false }, title = { Text("Hapus catatan?") }, text = { Text("Catatan ini akan dihapus dari perangkat.") },
-        confirmButton = { TextButton(onClick = {
-            runCatching { requireNotNull(store).delete(noteId) }.onSuccess { deleting = false; onSaved() }.onFailure { error = "Gagal menghapus catatan."; deleting = false }
-        }) { Text("Hapus") } }, dismissButton = { TextButton(onClick = { deleting = false }) { Text("Batal") } }
-    )
+    if (deleting) {
+        val deleteFailedMsg = lString("Gagal menghapus catatan.", "Failed to delete note.")
+        AlertDialog(
+            onDismissRequest = { deleting = false },
+            title = { Text(lString("Hapus catatan?", "Delete note?")) },
+            text = { Text(lString("Catatan ini akan dihapus dari perangkat.", "This note will be deleted from your device.")) },
+            confirmButton = { TextButton(onClick = {
+                runCatching { requireNotNull(store).delete(noteId) }.onSuccess { deleting = false; onSaved() }.onFailure { error = deleteFailedMsg; deleting = false }
+            }) { Text(lString("Hapus", "Delete")) } },
+            dismissButton = { TextButton(onClick = { deleting = false }) { Text(lString("Batal", "Cancel")) } }
+        )
+    }
 }

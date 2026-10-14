@@ -33,6 +33,8 @@ import org.umn.application.studenthub.data.model.FinanceSummary
 import org.umn.application.studenthub.ui.theme.GlowMintGreen
 import org.umn.application.studenthub.ui.theme.MintGreen
 
+import org.umn.application.studenthub.ui.localization.lString
+
 @Composable
 fun TodayFinanceCard(
     financeSummary: FinanceSummary?,
@@ -85,7 +87,7 @@ fun TodayFinanceCard(
                     }
                     Spacer(modifier = Modifier.width(16.dp))
                     Text(
-                        text = "Sisa Anggaran",
+                        text = lString("Sisa Anggaran", "Remaining Budget"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = contentColor

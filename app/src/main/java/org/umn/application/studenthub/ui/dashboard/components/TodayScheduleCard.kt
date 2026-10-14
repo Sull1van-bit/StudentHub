@@ -32,6 +32,8 @@ import org.umn.application.studenthub.data.model.ScheduleItem
 import org.umn.application.studenthub.ui.theme.GlowPaleBlue
 import org.umn.application.studenthub.ui.theme.PaleBlue
 
+import org.umn.application.studenthub.ui.localization.lString
+
 @Composable
 fun TodayScheduleCard(
     scheduleItem: ScheduleItem?,
@@ -85,7 +87,7 @@ fun TodayScheduleCard(
                 Spacer(modifier = Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = "Kelas Selanjutnya",
+                        text = lString("Kelas Selanjutnya", "Next Class"),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = contentColor
@@ -122,7 +124,7 @@ fun TodayScheduleCard(
                 }
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = "Sisa ${item.remainingTasks} Tugas",
+                    text = lString("Sisa ${item.remainingTasks} Tugas", "${item.remainingTasks} Task(s) Left"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = accentColor,
                     fontWeight = FontWeight.SemiBold

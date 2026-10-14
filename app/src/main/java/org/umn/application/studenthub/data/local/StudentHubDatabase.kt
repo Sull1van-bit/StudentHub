@@ -11,6 +11,29 @@ import java.util.UUID
 
 /** SQLite owns domain records; preferences are retained only as a migration backup. Call on IO. */
 class StudentHubDatabase private constructor(private val context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
+    init {
+        cleanupStaleAgendas()
+    }
+
+    private fun cleanupStaleAgendas() {
+        runCatching {
+            val db = writableDatabase
+            // Check if onboarding was completed or if real Monday courses exist (Technopreneurship, English 3, etc.)
+            val prefs = context.getSharedPreferences("academic", Context.MODE_PRIVATE)
+            val appPrefs = context.getSharedPreferences("studenthub_prefs", Context.MODE_PRIVATE)
+            val hasCompletedOnboarding = prefs.getBoolean("onboarding_completed", false) || appPrefs.getBoolean("has_completed_onboarding", false)
+
+            val hasRealMondayCourse = db.rawQuery(
+                "SELECT 1 FROM agenda WHERE day = 0 AND (title LIKE '%Technopreneurship%' OR title LIKE '%English%' OR title LIKE '%EM105%' OR title LIKE '%UM321%')",
+                null
+            ).use { it.moveToFirst() }
+
+            if (hasCompletedOnboarding || hasRealMondayCourse) {
+                db.delete("agenda", "id LIKE 'demo-%' OR id LIKE 'legacy-%' OR title LIKE '%Rekayasa Perangkat Lunak%'", null)
+            }
+        }
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE agenda (
             id TEXT PRIMARY KEY NOT NULL,
@@ -126,10 +149,10 @@ class StudentHubDatabase private constructor(private val context: Context) : SQL
                 insertAgenda(db, AgendaRow("legacy-$i", day, time, title))
             }
             listOf(
-                AgendaRow("demo-class-if570", 0, "09.00", "Pemrograman Aplikasi Mobile"),
-                AgendaRow("demo-class-if550", 0, "13.00", "Rekayasa Perangkat Lunak"),
-                AgendaRow("demo-study-if570", 0, "15.30", "Latihan navigasi Android"),
-                AgendaRow("demo-deadline-if570", 0, "17.00", "Praktikum 3: Navigasi"),
+                AgendaRow("demo-class", 0, "09.00", "Pemrograman Aplikasi Mobile"),
+                AgendaRow("demo-class-2", 0, "13.00", "Rekayasa Perangkat Lunak"),
+                AgendaRow("demo-study", 0, "15.30", "Latihan navigasi Android"),
+                AgendaRow("demo-deadline", 0, "17.00", "Praktikum 3: Navigasi")
             ).forEach { row -> if (db.query("agenda", arrayOf("id"), "id=?", arrayOf(row.id), null, null, null).use { !it.moveToFirst() }) insertAgenda(db, row) }
             DEFAULT_GRADES.forEach { (id, fallback) ->
                 val score = academic.getString("score.$id", null)?.let { raw ->
@@ -195,12 +218,12 @@ class StudentHubDatabase private constructor(private val context: Context) : SQL
     }
 
     fun goal(): Double = readableDatabase.rawQuery("SELECT goal FROM academic_goal WHERE id=1", null).use {
-        check(it.moveToFirst()); it.getDouble(0)
+        if (it.moveToFirst()) it.getDouble(0) else 3.6
     }
 
     fun saveGoal(goal: Double) {
         require(goal.isFinite() && goal in 0.0..4.0)
-        writableDatabase.execSQL("UPDATE academic_goal SET goal=? WHERE id=1", arrayOf(goal))
+        writableDatabase.execSQL("INSERT OR REPLACE INTO academic_goal(id,goal) VALUES(1,?)", arrayOf(goal))
     }
 
     fun transactions(): List<TransactionRow> = readableDatabase.query(
@@ -218,6 +241,21 @@ class StudentHubDatabase private constructor(private val context: Context) : SQL
             insertTransaction(db, row)
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
+    }
+
+    fun deleteAgenda(id: String) {
+        writableDatabase.delete("agenda", "id=?", arrayOf(id))
+    }
+
+    fun deleteTransaction(id: String) {
+        writableDatabase.delete("transactions", "id=?", arrayOf(id))
+    }
+
+    fun isOnboardingCompleted(): Boolean {
+        return runCatching {
+            val p = profile()
+            p.name.isNotBlank()
+        }.getOrDefault(false)
     }
 
     private fun insertTransaction(db: SQLiteDatabase, row: TransactionRow) {

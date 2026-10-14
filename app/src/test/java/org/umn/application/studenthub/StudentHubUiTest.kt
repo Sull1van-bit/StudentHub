@@ -48,6 +48,16 @@ class StudentHubUiTest {
         compose.onNodeWithText("Semester 5").assertIsDisplayed()
     }
 
+    @Test fun drawerNavigatesToAcademicAndBack() {
+        compose.onNodeWithTag("nav-more").performClick()
+        compose.onNodeWithTag("drawer-academic").performClick()
+        compose.onNodeWithText("Semester 5").assertIsDisplayed()
+        compose.onNodeWithTag("nav-more").performClick()
+        compose.onNodeWithTag("drawer-profile").performClick()
+        compose.onNodeWithTag("nav-home").performClick()
+        compose.onNodeWithTag("nav-academic").assertIsDisplayed()
+    }
+
     @Test fun secondaryDestinationsAndEditorAreReachable() {
         val screens = listOf("Catatan" to "Ide rapi, belajar ringan.", "Keuangan" to "Saldo transaksi lokal", "Nilai" to "Setiap kemajuan berarti.", "Belajar" to "Fokus kecil, hasil besar.")
         screens.forEach { (label, heading) ->
@@ -83,11 +93,13 @@ class StudentHubUiTest {
         capture("03-akademik")
         compose.onNodeWithTag("course-IF570").performScrollTo().performClick()
         capture("04-detail-mata-kuliah")
+        compose.onNodeWithContentDescription("Kembali").performClick()
         compose.onNodeWithTag("nav-more").performClick()
         compose.onNodeWithText("Catatan").performClick()
         capture("05-catatan")
         compose.onNodeWithText("Navigasi & Activity lifecycle").performScrollTo().performClick()
         capture("06-editor-catatan")
+        compose.onNodeWithContentDescription("Kembali").performClick()
         listOf("Keuangan" to "07-keuangan", "Nilai" to "08-pelacak-akademik", "Belajar" to "09-rekomendasi-belajar").forEach { (label, name) ->
             compose.onNodeWithTag("nav-more").performClick()
             compose.onNodeWithText(label).performClick()

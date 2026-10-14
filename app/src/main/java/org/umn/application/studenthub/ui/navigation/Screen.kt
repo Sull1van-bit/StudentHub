@@ -4,11 +4,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalanceWallet
 import androidx.compose.material.icons.rounded.Book
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.material.icons.rounded.Grade
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.School
 import androidx.compose.material.icons.rounded.MoreHoriz
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.School
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.ui.graphics.vector.ImageVector
 
 sealed class Screen(
@@ -18,12 +20,17 @@ sealed class Screen(
 ) {
     data object Home : Screen("home", "Home", Icons.Rounded.Home)
     data object Schedule : Screen("schedule", "Jadwal", Icons.Rounded.CalendarMonth)
+    data object Academic : Screen("academic", "Akademik", Icons.Rounded.School)
+    data object Notes : Screen("notes", "Catatan", Icons.Rounded.Book)
+    data object Finance : Screen("finance", "Keuangan", Icons.Rounded.AccountBalanceWallet)
+    data object Grades : Screen("grades", "Nilai", Icons.Rounded.Grade)
+    data object Learning : Screen("learning", "Belajar", Icons.Rounded.Star)
     data object Profile : Screen("profile", "Profil", Icons.Rounded.Person)
     data object More : Screen("more", "Lainnya", Icons.Rounded.MoreHoriz)
-    data object Finance : Screen("finance", "Keuangan", Icons.Rounded.AccountBalanceWallet)
-    data object Notes : Screen("notes", "Catatan", Icons.Rounded.Book)
+    data object ScanNote : Screen("scan_note", "Pindai Catatan", Icons.Rounded.CameraAlt)
 
     companion object {
         val bottomNavItems = listOf(Home, Schedule, Profile)
+        val drawerItems = listOf(Academic, Notes, Finance, Grades, Learning)
     }
 }

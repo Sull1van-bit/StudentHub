@@ -43,4 +43,19 @@ class AcademicStateTest {
         assertEquals(4, state.activeTaskCount)
         assertEquals(8, state.completedFor("IF570"))
     }
+
+    @Test fun semester5ActiveTasksCountMatchesTasksAndDecrementsOnToggle() {
+        val prefs = mutableMapOf("onboarding_completed" to "true")
+        val state = AcademicState(prefs::get) { k, v -> prefs[k] = v }
+        assertEquals(7, state.currentCourses().size)
+        assertEquals(4, state.activeTaskCount)
+        assertEquals(8, state.completedFor("IF570"))
+        assertEquals(3, state.completedFor("IF590"))
+        assertEquals(4, state.completedFor("IF542"))
+        state.toggleTask("research-prop")
+        assertEquals(3, state.activeTaskCount)
+        assertEquals(4, state.completedFor("IF590"))
+        state.toggleTask("research-prop")
+        assertEquals(4, state.activeTaskCount)
+    }
 }
