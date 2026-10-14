@@ -22,6 +22,8 @@ import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.*
 import androidx.navigation.navArgument
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import kotlinx.coroutines.launch
 import org.umn.application.studenthub.data.local.StudentHubDatabase
 import org.umn.application.studenthub.ui.academic.AcademicScreen
@@ -94,7 +96,11 @@ fun StudentHubApp(
             drawerState = drawerState,
         gesturesEnabled = currentBaseRoute != "onboarding",
         drawerContent = {
-            ModalDrawerSheet {
+            ModalDrawerSheet(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .widthIn(max = 300.dp)
+                ) {
                 Text(
                     "StudentHub",
                     Modifier.padding(horizontal = 28.dp, vertical = 24.dp),
@@ -261,7 +267,31 @@ fun StudentHubApp(
                 NavHost(
                     navController = navController,
                     startDestination = startDestination,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    enterTransition = {
+                        slideInHorizontally(
+                            initialOffsetX = { it },
+                            animationSpec = tween(300)
+                        )
+                    },
+                    exitTransition = {
+                        slideOutHorizontally(
+                            targetOffsetX = { -it },
+                            animationSpec = tween(300)
+                        )
+                    },
+                    popEnterTransition = {
+                        slideInHorizontally(
+                            initialOffsetX = { -it },
+                            animationSpec = tween(300)
+                        )
+                    },
+                    popExitTransition = {
+                        slideOutHorizontally(
+                            targetOffsetX = { it },
+                            animationSpec = tween(300)
+                        )
+                    }
                 ) {
                     composable("onboarding") {
                         OnboardingScreen(onFinished = {
