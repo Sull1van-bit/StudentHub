@@ -1,6 +1,5 @@
 package org.umn.application.studenthub.ui.academic
 
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -8,11 +7,17 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -22,45 +27,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import java.util.Locale
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
-import org.umn.application.studenthub.ui.localization.lString
+import kotlinx.coroutines.withContext
 import org.umn.application.studenthub.data.local.StudentHubDatabase
-import org.umn.application.studenthub.ui.localization.LocalAppLanguage
+import org.umn.application.studenthub.ui.components.CurriculumCourseDropdown
 import org.umn.application.studenthub.ui.localization.AppLanguage
+import org.umn.application.studenthub.ui.localization.LocalAppLanguage
+import org.umn.application.studenthub.ui.localization.lString
+import java.util.Locale
 
 val LocalDrawerOpen = compositionLocalOf { false }
-
-fun getCourseEnglishTitle(id: String, defaultTitle: String): String = when (id) {
-    "IF570" -> "Mobile Application Programming"
-    "EM105" -> "Technopreneurship"
-    "UM321" -> "English 3"
-    "IF590" -> "Information Technology Research"
-    "IF542" -> "Deep Learning"
-    "IF571" -> "Cybersecurity"
-    "IF581" -> "Game Development"
-    "IF510" -> "Advanced Database"
-    "IF530" -> "Human-Computer Interaction"
-    "IF550" -> "Software Engineering"
-    else -> defaultTitle
-}
-
-fun getCourseIndonesianTitle(id: String, defaultTitle: String): String = when (id) {
-    "IF570" -> "Pemrograman Aplikasi Mobile"
-    "EM105" -> "Technopreneurship"
-    "UM321" -> "Bahasa Inggris 3"
-    "IF590" -> "Riset Teknologi Informasi"
-    "IF542" -> "Deep Learning"
-    "IF571" -> "Keamanan Siber"
-    "IF581" -> "Pengembangan Game"
-    "IF510" -> "Basis Data Lanjut"
-    "IF530" -> "Interaksi Manusia & Komputer"
-    "IF550" -> "Rekayasa Perangkat Lunak"
-    else -> defaultTitle
-}
 
 fun formatSchedule(schedule: String, isEnglish: Boolean): String {
     if (!isEnglish) return schedule
@@ -77,12 +56,7 @@ fun formatSchedule(schedule: String, isEnglish: Boolean): String {
 
 fun formatRoom(room: String, isEnglish: Boolean): String {
     if (!isEnglish) return room
-    return room
-        .replace("Ruang ", "Room ")
-        .replace("Lab AI", "AI Lab")
-        .replace("Lab Cyber", "Cyber Lab")
-        .replace("Lab Game", "Game Lab")
-        .replace("Lab IMK", "HCI Lab")
+    return room.replace("Ruang ", "Room ")
 }
 
 @Composable
@@ -91,20 +65,7 @@ private fun rememberAcademicState(): AcademicState? {
     var state by remember {
         mutableStateOf<AcademicState?>(
             runCatching {
-                val prefs = context.getSharedPreferences("academic", Context.MODE_PRIVATE)
-                val appPrefs = context.getSharedPreferences("studenthub_prefs", Context.MODE_PRIVATE)
-                val isOnboarded = prefs.getBoolean("onboarding_completed", false) || appPrefs.getBoolean("has_completed_onboarding", false)
-                AcademicState(
-                    org.umn.application.studenthub.data.local.StudentHubDatabase.get(context),
-                    { key ->
-                        if (key == "onboarding_completed") {
-                            isOnboarded.toString()
-                        } else {
-                            runCatching { prefs.all[key]?.toString() }.getOrNull()
-                        }
-                    },
-                    { key, value -> prefs.edit().putString(key, value).apply() }
-                )
+                AcademicState(StudentHubDatabase.get(context))
             }.getOrNull()
         )
     }
@@ -115,29 +76,26 @@ private fun rememberAcademicState(): AcademicState? {
             failed = false
             withContext(Dispatchers.IO) {
                 runCatching {
-                    val prefs = context.getSharedPreferences("academic", Context.MODE_PRIVATE)
-                    val appPrefs = context.getSharedPreferences("studenthub_prefs", Context.MODE_PRIVATE)
-                    val isOnboarded = prefs.getBoolean("onboarding_completed", false) || appPrefs.getBoolean("has_completed_onboarding", false)
-                    AcademicState(
-                        org.umn.application.studenthub.data.local.StudentHubDatabase.get(context),
-                        { key ->
-                            if (key == "onboarding_completed") {
-                                isOnboarded.toString()
-                            } else {
-                                runCatching { prefs.all[key]?.toString() }.getOrNull()
-                            }
-                        },
-                        { key, value -> prefs.edit().putString(key, value).apply() }
-                    )
+                    AcademicState(StudentHubDatabase.get(context))
                 }
             }.onSuccess { state = it }.onFailure { failed = true }
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching { state?.reloadFromDatabase() }
+            }
         }
     }
     if (state == null) AcademicBody {
         if (failed) {
-            Text(lString("Data akademik tidak dapat dibaca. Data lama tidak diubah.", "Academic data could not be read. Existing data not modified."), color = MaterialTheme.colorScheme.error)
+            Text(
+                lString("Data akademik tidak dapat dibaca.", "Academic data could not be read."),
+                color = MaterialTheme.colorScheme.error
+            )
             TextButton(onClick = { attempt++ }) { Text(lString("Coba lagi", "Retry")) }
-        } else { CircularProgressIndicator(); BodyText(lString("Memuat data akademik…", "Loading academic data…")) }
+        } else {
+            CircularProgressIndicator()
+            BodyText(lString("Memuat data akademik…", "Loading academic data…"))
+        }
     }
     return state
 }
@@ -145,9 +103,12 @@ private fun rememberAcademicState(): AcademicState? {
 @Composable
 private fun AcademicBody(content: @Composable ColumnScope.() -> Unit) {
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp), content = content,
+        verticalArrangement = Arrangement.spacedBy(24.dp),
+        content = content,
     )
 }
 
@@ -162,8 +123,15 @@ private fun SectionTitle(title: String, trailing: String? = null, onAction: (() 
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
         if (trailing != null) {
-            if (onAction != null) TextButton(onClick = onAction, contentPadding = PaddingValues(0.dp)) { Text(trailing) }
-            else Text(trailing, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            if (onAction != null) {
+                TextButton(
+                    onClick = onAction,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) { Text(trailing) }
+            } else {
+                Text(trailing, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            }
         }
     }
 }
@@ -176,42 +144,28 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TaskRow(task: AcademicTask, checked: Boolean, onToggle: () -> Unit, compact: Boolean = false) {
-    val taskTitle = when (task.id) {
-        "navigation" -> lString("Praktikum 3: Navigasi", "Practicum 3: Navigation")
-        "architecture" -> lString("Diagram arsitektur", "Architecture diagram")
-        "mini-project" -> lString("Proyek mini: Daftar tugas", "Mini project: Task list")
-        "layout" -> lString("Praktikum 2: Layout", "Practicum 2: Layout")
-        "components" -> lString("Praktikum 1: Komponen UI", "Practicum 1: UI Components")
-        "research-prop" -> lString("Proposal Topik Riset", "Research Topic Proposal")
-        "deep-learning-lab" -> lString("Lab 1: Pengenalan PyTorch", "Lab 1: PyTorch Introduction")
-        else -> task.title
-    }
-    val deadlineText = when (task.id) {
-        "navigation" -> lString("HARI INI • 17.00", "TODAY • 17:00")
-        "architecture" -> lString("RABU, 7 OKT • IF550", "WEDNESDAY, OCT 7 • IF550")
-        "mini-project" -> lString("JUMAT, 9 OKT • 23.59", "FRIDAY, OCT 9 • 23:59")
-        "research-prop" -> lString("RABU, 14 OKT • 23.59", "WEDNESDAY, OCT 14 • 23:59")
-        "deep-learning-lab" -> lString("KAMIS, 15 OKT • 17.00", "THURSDAY, OCT 15 • 17:00")
-        else -> task.deadline
-    }
-    val detailText = when {
-        compact && task.id == "navigation" -> lString("Hari ini, 17.00 · IF570", "Today, 17:00 · IF570")
-        compact && task.id == "architecture" -> lString("Rabu, 7 Okt · IF550", "Wednesday, Oct 7 · IF550")
-        compact && task.id == "mini-project" -> lString("Jumat, 9 Okt · IF570", "Friday, Oct 9 · IF570")
-        compact && task.id == "research-prop" -> lString("Rabu, 14 Okt · IF590", "Wednesday, Oct 14 · IF590")
-        compact && task.id == "deep-learning-lab" -> lString("Kamis, 15 Okt · IF542", "Thursday, Oct 15 · IF542")
-        task.id == "navigation" -> lString("Laporan PDF & kode proyek Android", "PDF report & Android project code")
-        task.id == "mini-project" -> lString("Implementasi penyimpanan lokal", "Local storage implementation")
-        task.id == "layout" -> lString("Dikumpulkan 28 Sep • Nilai 88", "Submitted Sep 28 • Grade 88")
-        task.id == "components" -> lString("Dikumpulkan 21 Sep • Nilai 85", "Submitted Sep 21 • Grade 85")
-        else -> task.detail
-    }
+private fun TaskRow(
+    task: AcademicTask,
+    checked: Boolean,
+    onToggle: () -> Unit,
+    onToggleReminder: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+    compact: Boolean = false
+) {
+    val supporting = buildList {
+        if (compact && task.deadline.isNotBlank()) add(task.deadline)
+        if (compact) add(task.courseId)
+        if (task.detail.isNotBlank()) add(task.detail)
+    }.joinToString(" · ")
+
     ListItem(
-        modifier = Modifier.fillMaxWidth().testTag("task-${task.id}").toggleable(checked, role = Role.Checkbox) { onToggle() },
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("task-${task.id}")
+            .toggleable(checked, role = Role.Checkbox) { onToggle() },
         headlineContent = {
             Text(
-                taskTitle,
+                task.title,
                 style = if (checked) {
                     MaterialTheme.typography.bodyLarge.copy(
                         textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough,
@@ -222,9 +176,37 @@ private fun TaskRow(task: AcademicTask, checked: Boolean, onToggle: () -> Unit, 
                 }
             )
         },
-        overlineContent = if (deadlineText.isNotEmpty() && !compact) { { Text(deadlineText) } } else null,
-        supportingContent = { BodyText(detailText) },
+        overlineContent = if (task.deadline.isNotEmpty() && !compact) {
+            { Text(task.deadline) }
+        } else null,
+        supportingContent = if (supporting.isNotEmpty()) {
+            { BodyText(supporting) }
+        } else null,
         leadingContent = { Checkbox(checked = checked, onCheckedChange = null) },
+        trailingContent = if (onToggleReminder != null || onDelete != null) {
+            {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onToggleReminder != null) {
+                        IconButton(onClick = onToggleReminder) {
+                            Icon(
+                                imageVector = if (task.reminderEnabled) Icons.Default.NotificationsActive else Icons.Outlined.Notifications,
+                                contentDescription = lString("Pengingat Tugas", "Task Reminder"),
+                                tint = if (task.reminderEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    if (onDelete != null) {
+                        IconButton(onClick = onDelete) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = lString("Hapus Tugas", "Delete Task"),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            }
+        } else null,
         colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
     )
 }
@@ -236,104 +218,370 @@ private fun Divider() = HorizontalDivider(color = MaterialTheme.colorScheme.outl
 private fun Progress(value: Float) = LinearProgressIndicator(progress = { value }, modifier = Modifier.fillMaxWidth().height(4.dp))
 
 @Composable
-private fun SummaryCard(content: @Composable ColumnScope.() -> Unit) {
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), shape = RoundedCornerShape(12.dp)) {
+private fun SummaryCard(onClick: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
+    val modifier = if (onClick != null) Modifier.fillMaxWidth().clickable(onClick = onClick) else Modifier.fillMaxWidth()
+    Card(modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), shape = RoundedCornerShape(12.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
     }
 }
 
 @Composable
-fun CourseDetailScreen(courseId: String, onScanClick: () -> Unit = {}, onNotesClick: () -> Unit) {
+fun CourseDetailScreen(
+    courseId: String,
+    onScanClick: () -> Unit = {},
+    onEditNote: (noteId: String, courseId: String) -> Unit = { _, _ -> },
+    onNotesClick: () -> Unit
+) {
+    val context = LocalContext.current
     val state = rememberAcademicState() ?: return
-    val course = state.currentCourses().firstOrNull { it.id == courseId } ?: academicCourses.firstOrNull { it.id == courseId } ?: semester5Courses.firstOrNull { it.id == courseId }
+    val course = state.currentCourses().firstOrNull { it.id.equals(courseId, ignoreCase = true) }
     var tab by rememberSaveable(courseId) { mutableStateOf("Tugas") }
-    var showAdd by rememberSaveable { mutableStateOf(false) }
-    var showHistory by rememberSaveable { mutableStateOf(false) }
+    var showAddTask by rememberSaveable { mutableStateOf(false) }
+    var showEditGrade by rememberSaveable { mutableStateOf(false) }
+
     if (course == null) {
-        AcademicBody { Headline(lString("Mata kuliah tidak ditemukan", "Course Not Found")); BodyText(lString("Data untuk $courseId belum tersedia.", "Data for $courseId is not available.")) }
+        AcademicBody {
+            Headline(lString("Mata kuliah tidak ditemukan", "Course Not Found"))
+            BodyText(lString("Data untuk $courseId tidak ditemukan.", "Data for $courseId was not found."))
+        }
         return
     }
-    val total = runCatching { state.totalFor(course.id) }.getOrDefault(course.total).coerceAtLeast(1)
-    val completed = runCatching { state.completedFor(course.id) }.getOrDefault(course.completed).coerceAtMost(total)
+
+    val courseNotes = remember(course.id, tab) {
+        runCatching {
+            StudentHubDatabase.get(context).notes().filter {
+                it.course.equals(course.id, ignoreCase = true) ||
+                    it.course.equals(course.title, ignoreCase = true)
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    val total = state.totalFor(course.id)
+    val completed = state.completedFor(course.id)
+    val progressRatio = if (total > 0) completed.toFloat() / total else 0f
+    val progressPercent = if (total > 0) (completed * 100 / total) else 0
     val isEn = LocalAppLanguage.current == AppLanguage.ENGLISH
-    val courseTitle = if (isEn) getCourseEnglishTitle(course.id, course.title) else getCourseIndonesianTitle(course.id, course.title)
-    val lecturerName = if (course.lecturer == "Dosen Pengampu") lString("Dosen Pengampu", "Course Lecturer") else course.lecturer
     val scheduleText = formatSchedule(course.schedule, isEn)
     val roomText = formatRoom(course.room, isEn)
+
     AcademicBody {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("${course.id} • ${course.sks} " + lString("SKS", "credits"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Headline(courseTitle)
-            BodyText(lString("Dosen: $lecturerName", "Lecturer: $lecturerName"))
-            BodyText("$scheduleText · $roomText")
+            Headline(course.title)
+            if (course.lecturer.isNotBlank()) {
+                BodyText(lString("Dosen: ${course.lecturer}", "Lecturer: ${course.lecturer}"))
+            }
+            val scheduleAndRoom = listOf(scheduleText, roomText).filter { it.isNotBlank() }.joinToString(" · ")
+            if (scheduleAndRoom.isNotBlank()) {
+                BodyText(scheduleAndRoom)
+            }
             if (course.description.isNotBlank()) {
                 Text(course.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         SummaryCard {
-            SectionTitle(lString("Progres tugas", "Assignment progress"), "${completed * 100 / total}%")
-            Progress(completed.toFloat() / total)
-            val remaining = total - completed
-            val remainingText = when {
-                remaining == 0 -> lString(" Semua tugas selesai!", " All tasks completed!")
-                remaining == 1 -> lString(" Tinggal satu lagi!", " Just one left!")
-                remaining == 2 -> lString(" Tinggal dua lagi!", " Just two left!")
-                else -> ""
+            SectionTitle(lString("Progres tugas", "Assignment progress"), "$progressPercent%")
+            Progress(progressRatio)
+            if (total == 0) {
+                BodyText(lString("Belum ada tugas untuk mata kuliah ini.", "No tasks added for this course yet."))
+            } else {
+                val remaining = total - completed
+                val remainingText = when (remaining) {
+                    0 -> lString(" Semua tugas selesai!", " All tasks completed!")
+                    1 -> lString(" Tinggal satu lagi!", " Just one left!")
+                    else -> ""
+                }
+                BodyText(lString("$completed dari $total tugas selesai.", "$completed of $total tasks completed.") + remainingText)
             }
-            BodyText(lString("$completed dari $total tugas selesai.", "$completed of $total tasks completed.") + remainingText)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ChoiceChip(lString("Tugas", "Tasks"), tab == "Tugas") { tab = "Tugas" }
             val isDrawerOpen = LocalDrawerOpen.current
-            ChoiceChip(if (isDrawerOpen) lString("Catatan Kuliah", "Class Notes") else lString("Catatan", "Notes"), false, onNotesClick)
+            ChoiceChip(
+                if (isDrawerOpen) lString("Catatan Kuliah", "Class Notes") else lString("Catatan", "Notes"),
+                tab == "Catatan"
+            ) {
+                tab = "Catatan"
+                onNotesClick()
+            }
             ChoiceChip(lString("Nilai", "Grades"), tab == "Nilai") { tab = "Nilai" }
         }
-        if (tab == "Nilai") {
-            val grade = state.grades[course.id] ?: AcademicGrade(85, "A")
-            SummaryCard {
-                SectionTitle(lString("Nilai sementara", "Interim grade"), "${grade.letter} · ${decimal(gradePoints.getValue(grade.letter))}")
-                Headline(lString("Skor ${grade.score}", "Score ${grade.score}"))
-                BodyText(lString("Nilai ini disimpan secara lokal dan memengaruhi perhitungan IPS.", "This grade is saved locally and affects term GPA calculations."))
+        when (tab) {
+            "Nilai" -> {
+                val grade = state.grades[course.id]
+                SummaryCard {
+                    if (grade != null) {
+                        SectionTitle(lString("Nilai tersimpan", "Saved grade"), "${grade.letter} · ${decimal(gradePoints.getValue(grade.letter))}")
+                        Headline(lString("Skor ${grade.score}", "Score ${grade.score}"))
+                        BodyText(lString("Nilai ini memengaruhi perhitungan IPS & IPK semester berjalan.", "This grade affects term and cumulative GPA calculations."))
+                    } else {
+                        SectionTitle(lString("Nilai mata kuliah", "Course grade"), lString("Belum dinilai", "Not graded"))
+                        BodyText(lString("Belum ada nilai yang dimasukkan untuk mata kuliah ini.", "No grade has been entered for this course yet."))
+                    }
+                    Button(onClick = { showEditGrade = true }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Edit, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (grade != null) lString("Ubah Nilai", "Edit Grade") else lString("Masukkan Nilai", "Enter Grade"))
+                    }
+                }
             }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                SectionTitle(lString("Tugas aktif", "Active tasks"), lString("${state.totalFor(course.id) - completed} tugas", "${state.totalFor(course.id) - completed} tasks"))
-                val active = state.tasks.filter { it.courseId == course.id && !it.initiallyDone }
-                active.forEachIndexed { index, task ->
-                    TaskRow(task, state.completion[task.id] == true, { state.toggleTask(task.id) })
-                    if (task.id == "navigation") Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(8.dp)) {
-                        Column(Modifier.padding(12.dp)) {
-                            BodyText(lString("Pengingat aktif • 1 jam sebelum tenggat", "Active reminder • 1 hour before deadline"))
-                            Text(lString("Preferensi contoh; notifikasi belum dijadwalkan.", "Sample preference; notifications not yet scheduled."), style = MaterialTheme.typography.bodySmall)
+            "Catatan" -> {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SectionTitle(
+                        lString("Catatan ${course.id}", "${course.id} Notes"),
+                        lString("${courseNotes.size} catatan", "${courseNotes.size} notes")
+                    )
+                    if (courseNotes.isEmpty()) {
+                        BodyText(lString("Belum ada catatan untuk mata kuliah ${course.title}.", "No notes linked to ${course.title} yet."))
+                    } else {
+                        courseNotes.forEach { note ->
+                            SummaryCard(onClick = { onEditNote(note.id, course.id) }) {
+                                Text(note.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
+                                if (note.body.isNotBlank()) {
+                                    BodyText(note.body.lines().firstOrNull().orEmpty())
+                                }
+                            }
                         }
                     }
-                    if (index < active.lastIndex) Divider()
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { onEditNote("", course.id) }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(lString("Buat Catatan ${course.id}", "New ${course.id} Note"))
+                        }
+                        OutlinedButton(onClick = onScanClick, modifier = Modifier.weight(1f)) {
+                            Text(lString("Pindai Catatan", "Scan Notes"))
+                        }
+                    }
                 }
-                if (active.isEmpty()) BodyText(if (state.totalFor(course.id) == completed) lString("Tidak ada tugas aktif", "No active tasks") else lString("Detail tugas belum tersedia pada data lokal.", "Task details not available in local data."))
             }
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                SectionTitle(lString("Terakhir selesai", "Recently completed"), lString("Lihat $completed", "View $completed")) { showHistory = true }
-                state.tasks.filter { it.courseId == course.id && it.initiallyDone }.forEach { task ->
-                    TaskRow(task, state.completion[task.id] == true, { state.toggleTask(task.id) })
-                    Divider()
+            else -> {
+                val courseTasks = state.tasks.filter { it.courseId == course.id }
+                val active = courseTasks.filter { state.completion[it.id] != true }
+                val done = courseTasks.filter { state.completion[it.id] == true }
+
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    SectionTitle(lString("Tugas aktif", "Active tasks"), lString("${active.size} tugas", "${active.size} tasks"))
+                    active.forEachIndexed { index, task ->
+                        TaskRow(
+                            task = task,
+                            checked = false,
+                            onToggle = { state.toggleTask(task.id) },
+                            onToggleReminder = { state.toggleTaskReminder(task.id) },
+                            onDelete = { state.deleteTask(task.id) }
+                        )
+                        if (task.reminderEnabled) {
+                            Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(8.dp)) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.NotificationsActive, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                    Text(
+                                        lString("Pengingat aktif untuk tugas ini.", "Reminder active for this task."),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                            }
+                        }
+                        if (index < active.lastIndex) Divider()
+                    }
+                    if (active.isEmpty()) {
+                        BodyText(lString("Tidak ada tugas aktif.", "No active tasks."))
+                    }
                 }
-            }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { showAdd = true }, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.School, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(lString("Tambah tugas", "Add task"))
+                if (done.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SectionTitle(lString("Tugas selesai", "Completed tasks"), "${done.size}")
+                        done.forEach { task ->
+                            TaskRow(
+                                task = task,
+                                checked = true,
+                                onToggle = { state.toggleTask(task.id) },
+                                onDelete = { state.deleteTask(task.id) }
+                            )
+                            Divider()
+                        }
+                    }
                 }
-                OutlinedButton(onClick = onScanClick, modifier = Modifier.weight(1f).testTag("course-scan-note")) {
-                    Text(lString("Pindai Catatan", "Scan Notes"))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { showAddTask = true }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(lString("Tambah tugas", "Add task"))
+                    }
+                    OutlinedButton(onClick = onScanClick, modifier = Modifier.weight(1f).testTag("course-scan-note")) {
+                        Text(lString("Pindai Catatan", "Scan Notes"))
+                    }
                 }
             }
         }
     }
-    if (showAdd) TextEditDialog(lString("Tambah tugas", "Add task"), lString("Nama tugas", "Task name"), "", { showAdd = false }) { name ->
-        state.addTask(courseId, name).also { if (it) showAdd = false }
+
+    if (showAddTask) {
+        AddTaskDialog(
+            onDismiss = { showAddTask = false },
+            onSave = { title, detail, deadline, reminderEnabled, reminderTime ->
+                val ok = state.addTask(course.id, title, detail, deadline, reminderEnabled, reminderTime)
+                if (ok) showAddTask = false
+                ok
+            }
+        )
     }
-    if (showHistory) AlertDialog(onDismissRequest = { showHistory = false }, title = { Text(lString("Tugas selesai", "Completed tasks")) }, text = {
-        BodyText(lString("$completed dari ${state.totalFor(course.id)} tugas selesai. Hanya rincian tugas yang tersedia secara lokal ditampilkan di halaman ini.", "$completed of ${state.totalFor(course.id)} tasks completed. Only tasks available locally are shown here."))
-    }, confirmButton = { TextButton(onClick = { showHistory = false }) { Text(lString("Tutup", "Close")) } })
+
+    if (showEditGrade) {
+        GradeEditDialog(
+            courseId = course.id,
+            initialGrade = state.grades[course.id],
+            onDismiss = { showEditGrade = false },
+            onSave = { score, letter ->
+                val ok = state.updateGrade(course.id, score, letter)
+                if (ok) showEditGrade = false
+                ok
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddTaskDialog(
+    onDismiss: () -> Unit,
+    onSave: (title: String, detail: String, deadline: String, reminderEnabled: Boolean, reminderTime: String) -> Boolean
+) {
+    var title by rememberSaveable { mutableStateOf("") }
+    var detail by rememberSaveable { mutableStateOf("") }
+    var deadline by rememberSaveable { mutableStateOf("") }
+    var reminderEnabled by rememberSaveable { mutableStateOf(false) }
+    var reminderTime by rememberSaveable { mutableStateOf("") }
+    var error by rememberSaveable { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(lString("Tambah Tugas", "Add Task")) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it; error = false },
+                    label = { Text(lString("Nama tugas", "Task name")) },
+                    isError = error && title.isBlank(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = detail,
+                    onValueChange = { detail = it },
+                    label = { Text(lString("Rincian tugas (opsional)", "Task details (optional)")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                org.umn.application.studenthub.ui.components.DatePickerField(
+                    value = deadline,
+                    onValueChange = { deadline = it },
+                    label = lString("Tenggat (opsional)", "Deadline (optional)")
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(lString("Aktifkan pengingat notifikasi", "Enable notification reminder"), style = MaterialTheme.typography.bodyMedium)
+                    Switch(checked = reminderEnabled, onCheckedChange = { reminderEnabled = it })
+                }
+                if (reminderEnabled) {
+                    org.umn.application.studenthub.ui.components.TimePickerField(
+                        value = reminderTime,
+                        onValueChange = { reminderTime = it; error = false },
+                        label = lString("Jam pengingat (HH.mm)", "Reminder time (HH.mm)"),
+                        placeholder = "08.00"
+                    )
+                }
+                if (error) {
+                    Text(
+                        lString("Nama tugas wajib diisi (dan jam pengingat harus HH.mm jika diaktifkan).", "Task name is required (and reminder time must be HH.mm if enabled)."),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val timeToUse = if (reminderEnabled) StudentHubDatabase.normalizeTimeFormat(reminderTime) else "08.00"
+                val timeOk = !reminderEnabled || Regex("(?:[01][0-9]|2[0-3])\\.[0-5][0-9]").matches(timeToUse)
+                if (title.isNotBlank() && timeOk) {
+                    if (!onSave(title, detail, deadline, reminderEnabled, timeToUse)) {
+                        error = true
+                    }
+                } else {
+                    error = true
+                }
+            }) { Text(lString("Simpan", "Save")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(lString("Batal", "Cancel")) }
+        }
+    )
+}
+
+@Composable
+private fun GradeEditDialog(
+    courseId: String,
+    initialGrade: AcademicGrade?,
+    onDismiss: () -> Unit,
+    onSave: (score: String, letter: String) -> Boolean
+) {
+    var score by rememberSaveable(courseId) { mutableStateOf(initialGrade?.score?.toString() ?: "") }
+    var letter by rememberSaveable(courseId) { mutableStateOf(initialGrade?.letter ?: "A") }
+    var error by rememberSaveable(courseId) { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(lString("Edit nilai · $courseId", "Edit Grade · $courseId")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                BodyText(lString("Masukkan skor 0-100 untuk memperbarui nilai huruf dan perhitungan IPK.", "Enter score 0-100 to update letter grade and GPA calculation."))
+                OutlinedTextField(
+                    value = score,
+                    onValueChange = {
+                        score = it
+                        val s = it.toIntOrNull()
+                        if (s != null && s in 0..100) {
+                            error = false
+                            letter = scoreToLetter(s)
+                        } else {
+                            error = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("grade-score"),
+                    label = { Text(lString("Skor (0-100)", "Score (0-100)")) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    isError = error,
+                    supportingText = if (error) {
+                        { Text(lString("Skor harus berupa angka antara 0 dan 100.", "Score must be a number between 0 and 100.")) }
+                    } else null
+                )
+                Text(lString("Nilai Huruf Terpilih:", "Selected Letter Grade:"), style = MaterialTheme.typography.labelMedium)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    gradePoints.keys.forEach { option -> ChoiceChip(option, letter == option) { letter = option } }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !error && score.toIntOrNull() in 0..100,
+                onClick = {
+                    val ok = runCatching { onSave(score, letter) }.getOrDefault(false)
+                    if (!ok) error = true
+                }
+            ) { Text(lString("Simpan", "Save")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(lString("Batal", "Cancel")) }
+        }
+    )
 }
 
 @Composable
@@ -342,213 +590,362 @@ fun GradesScreen() {
     val context = LocalContext.current
     val database = remember(context) { StudentHubDatabase.get(context) }
     val isEn = LocalAppLanguage.current == AppLanguage.ENGLISH
-    val scope = rememberCoroutineScope()
     var editing by rememberSaveable { mutableStateOf<String?>(null) }
     var showGoal by rememberSaveable { mutableStateOf(false) }
-    var semesterInfo by rememberSaveable { mutableStateOf(false) }
 
-    val prefs = remember(context) { context.getSharedPreferences("academic", Context.MODE_PRIVATE) }
-    val appPrefs = remember(context) { context.getSharedPreferences("studenthub_prefs", Context.MODE_PRIVATE) }
-    val isOnboarded = prefs.getBoolean("onboarding_completed", false) || appPrefs.getBoolean("has_completed_onboarding", false)
+    val dbProfile = remember(state.courses, state.grades) { runCatching { database.profile() }.getOrNull() }
+    val studentName = dbProfile?.name?.takeIf { it.isNotBlank() } ?: lString("Mahasiswa", "Student")
+    val program = dbProfile?.program?.takeIf { it.isNotBlank() } ?: lString("Program Studi", "Study Program")
+    val semesterNum = dbProfile?.semester ?: 1
+    val priorIpk = dbProfile?.priorIpk ?: 0.0
+    val priorSks = dbProfile?.priorSks ?: 0
 
-    val dbProfile = remember { runCatching { database.profile() }.getOrNull() }
-    val studentName = dbProfile?.name?.takeIf { it.isNotBlank() } ?: "Nadia Putri"
-    val program = dbProfile?.program?.takeIf { it.isNotBlank() } ?: lString("Informatika", "Computer Science")
-    val semesterNum = dbProfile?.semester ?: 5
-
-    val coursesToDisplay = if (isOnboarded) semester5Courses else academicCourses
+    val coursesToDisplay = state.currentCourses()
     val totalSks = coursesToDisplay.sumOf { it.sks }
+
+    val journeyItems = remember(semesterNum, priorIpk, priorSks, state.semesterGpa, state.grades, isEn) {
+        buildList {
+            if (semesterNum > 1 && priorSks > 0 && priorIpk > 0.0) {
+                add((if (isEn) "Term 1-${semesterNum - 1}" else "Sem 1-${semesterNum - 1}") to priorIpk)
+            }
+            if (state.grades.isNotEmpty()) {
+                add((if (isEn) "Term $semesterNum" else "Sem $semesterNum") to state.semesterGpa)
+            }
+        }
+    }
 
     AcademicBody {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Headline(if (isEn) "Grades & GPA" else "Setiap kemajuan berarti.")
+            Headline(if (isEn) "Grades & GPA" else "Nilai & IPK")
             BodyText("$studentName • $program")
-            ChoiceChip(lString("Semester $semesterNum · 2026", "Semester $semesterNum · 2026"), true) { semesterInfo = true }
+            ChoiceChip(lString("Semester $semesterNum", "Semester $semesterNum"), true) {}
         }
         SummaryCard {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    BodyText(lString("IPS sementara", "Term GPA")); Headline(decimal(state.semesterGpa))
-                    BodyText(if (isOnboarded) lString("$totalSks SKS semester ini", "$totalSks credits this semester") else lString("12 SKS semester ini", "12 credits this semester"))
+                    BodyText(lString("IPS sementara", "Term GPA"))
+                    Headline(decimal(state.semesterGpa))
+                    BodyText(lString("$totalSks SKS semester ini", "$totalSks credits this semester"))
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    BodyText(lString("IPK Kumulatif", "Cumulative GPA")); Headline(decimal(state.cumulativeGpa)); BodyText(lString("Riwayat + semester ini", "History + this term"))
+                    BodyText(lString("IPK Kumulatif", "Cumulative GPA"))
+                    Headline(decimal(state.cumulativeGpa))
+                    BodyText(lString("Riwayat + semester ini", "History + this term"))
                 }
             }
-            BodyText(lString("IPS memakai nilai sementara. IPK dihitung dinamis dari riwayat semester lalu dan nilai berjalan.", "Term GPA uses interim grades. Cumulative GPA is computed dynamically from prior history and current grades."))
+            BodyText(lString("IPS dan IPK dihitung otomatis dari mata kuliah semester berjalan.", "Term GPA and Cumulative GPA are calculated automatically from current semester courses."))
         }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionTitle(lString("Perjalanan IPS", "GPA Journey"), lString("4 semester", "4 semesters"))
-            Row(Modifier.fillMaxWidth().height(130.dp), horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.Bottom) {
-                listOf(3.40, 3.50, 3.60, 3.75).forEachIndexed { index, value ->
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(decimal(value), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        Box(Modifier.width(42.dp).height((value * 22).dp).background(
-                            if (index == 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
-                            RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)))
-                        Text(lString("Sem ${index + 1}", "Term ${index + 1}"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SectionTitle(lString("Perjalanan IPS", "GPA Journey"), if (journeyItems.isNotEmpty()) "${journeyItems.size} periode" else null)
+            if (journeyItems.isEmpty()) {
+                BodyText(lString("Belum ada data nilai. Masukkan nilai mata kuliah untuk melihat grafik perjalanan IPS.", "No grade data yet. Enter course grades to see your GPA journey chart."))
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().height(130.dp),
+                    horizontalArrangement = Arrangement.spacedBy(20.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    journeyItems.forEachIndexed { index, (label, value) ->
+                        Column(
+                            Modifier.weight(1f),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(decimal(value), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                            Box(
+                                Modifier
+                                    .width(48.dp)
+                                    .height((value.coerceIn(0.2, 4.0) * 22).dp)
+                                    .background(
+                                        if (index == journeyItems.lastIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer,
+                                        RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp)
+                                    )
+                            )
+                            Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
         }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionTitle(lString("Nilai semester $semesterNum", "Semester $semesterNum Grades"), lString("Edit nilai", "Edit Grade")) { editing = "IF570" }
-            Column {
-                coursesToDisplay.forEach { course ->
-                    val grade = state.grades[course.id] ?: AcademicGrade(85, "A")
-                    val courseTitle = if (isEn) getCourseEnglishTitle(course.id, course.title) else getCourseIndonesianTitle(course.id, course.title)
-                    ListItem(modifier = Modifier.clickable { editing = course.id },
-                        overlineContent = { Text("${course.id} · ${course.sks} SKS · " + lString("Skor ${grade.score}", "Score ${grade.score}")) },
-                        headlineContent = { Text(courseTitle) }, supportingContent = { BodyText(lString("Nilai sementara", "Interim grade")) },
-                        trailingContent = { Text("${grade.letter} · ${decimal(gradePoints.getValue(grade.letter))}") },
-                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface))
-                    Divider()
+            val firstCourseCode = coursesToDisplay.firstOrNull()?.id
+            SectionTitle(
+                lString("Nilai semester $semesterNum", "Semester $semesterNum Grades"),
+                if (firstCourseCode != null) lString("Edit nilai", "Edit Grade") else null,
+                if (firstCourseCode != null) ({ editing = firstCourseCode }) else null
+            )
+            if (coursesToDisplay.isEmpty()) {
+                BodyText(lString("Belum ada mata kuliah terdaftar. Tambahkan mata kuliah di menu Akademik atau Profil.", "No courses registered yet. Add courses in the Academics or Profile menu."))
+            } else {
+                Column {
+                    coursesToDisplay.forEach { course ->
+                        val grade = state.grades[course.id]
+                        ListItem(
+                            modifier = Modifier.clickable { editing = course.id },
+                            overlineContent = {
+                                val scoreLabel = if (grade != null) lString("Skor ${grade.score}", "Score ${grade.score}") else lString("Belum dinilai", "Not graded")
+                                Text("${course.id} · ${course.sks} SKS · $scoreLabel")
+                            },
+                            headlineContent = { Text(course.title) },
+                            supportingContent = { BodyText(lString("Ketuk untuk mengubah nilai", "Tap to edit grade")) },
+                            trailingContent = {
+                                if (grade != null) {
+                                    Text("${grade.letter} · ${decimal(gradePoints.getValue(grade.letter))}")
+                                } else {
+                                    Text("-")
+                                }
+                            },
+                            colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface)
+                        )
+                        Divider()
+                    }
                 }
             }
         }
         Button(onClick = { showGoal = true }, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.Star, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(lString("Lihat target belajar", "View Study Target"))
+            Icon(Icons.Default.Star, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(lString("Atur target IPK (${decimal(state.goal)})", "Set GPA Target (${decimal(state.goal)})"))
         }
     }
     editing?.let { courseId ->
-        key(courseId) {
-            val grade = state.grades[courseId] ?: AcademicGrade(85, "A")
-            var score by rememberSaveable { mutableStateOf(grade.score.toString()) }
-            var letter by rememberSaveable { mutableStateOf(grade.letter) }
-            var error by rememberSaveable { mutableStateOf(false) }
-            var saveError by remember { mutableStateOf<String?>(null) }
-            var saving by remember { mutableStateOf(false) }
-            AlertDialog(onDismissRequest = { editing = null }, title = { Text(lString("Edit nilai · $courseId", "Edit Grade · $courseId")) }, text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    BodyText(lString("Catatan lokal. Masukkan skor 0–100 untuk mengupdate nilai huruf dan IPK.", "Local record. Enter score 0–100 to update letter grade and GPA."))
-                    OutlinedTextField(
-                        value = score,
-                        onValueChange = {
-                            score = it
-                            val s = it.toIntOrNull()
-                            if (s != null && s in 0..100) {
-                                error = false
-                                letter = when {
-                                    s >= 85 -> "A"
-                                    s >= 80 -> "A-"
-                                    s >= 75 -> "B+"
-                                    s >= 70 -> "B"
-                                    s >= 65 -> "B-"
-                                    s >= 60 -> "C+"
-                                    s >= 55 -> "C"
-                                    s >= 40 -> "D"
-                                    else -> "E"
-                                }
-                            } else {
-                                error = true
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().testTag("grade-score"),
-                        label = { Text(lString("Skor (0–100)", "Score (0–100)")) },
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
-                        isError = error,
-                        supportingText = if (error) { { Text(lString("Skor harus berupa angka antara 0 dan 100.", "Score must be a number between 0 and 100.")) } } else null
-                    )
-                    Text(lString("Nilai Huruf Terpilih:", "Selected Letter Grade:"), style = MaterialTheme.typography.labelMedium)
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        gradePoints.keys.forEach { option -> ChoiceChip(option, letter == option) { letter = option } }
-                    }
-                    saveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                }
-            }, confirmButton = { TextButton(enabled = !saving && !error && score.toIntOrNull() in 0..100, onClick = {
-                saving = true
-                val ok = runCatching { state.updateGrade(courseId, score, letter) }.getOrDefault(false)
-                if (ok) editing = null else error = true
-                saving = false
-            }) { Text(lString("Simpan", "Save")) } }, dismissButton = { TextButton(onClick = { editing = null }) { Text(lString("Batal", "Cancel")) } })
-        }
+        GradeEditDialog(
+            courseId = courseId,
+            initialGrade = state.grades[courseId],
+            onDismiss = { editing = null },
+            onSave = { score, letter ->
+                val ok = state.updateGrade(courseId, score, letter)
+                if (ok) editing = null
+                ok
+            }
+        )
     }
     if (showGoal) GoalDialog(state) { showGoal = false }
-    if (semesterInfo) AlertDialog(onDismissRequest = { semesterInfo = false }, title = { Text("Semester 5 · 2026") },
-        text = { BodyText(lString("Nilai sementara semester ini dapat diedit. Riwayat semester 1–4 ditampilkan pada Perjalanan IPS.", "Interim grades for this semester can be edited. Semesters 1–4 history is shown on the GPA Journey.")) },
-        confirmButton = { TextButton(onClick = { semesterInfo = false }) { Text(lString("Tutup", "Close")) } })
 }
 
 @Composable
 fun LearningScreen() {
-    val state = rememberAcademicState() ?: return
     val context = LocalContext.current
-    val prefs = remember(context) { context.getSharedPreferences("academic", Context.MODE_PRIVATE) }
-    var lifecycleDone by remember { mutableStateOf(prefs.getBoolean("learning.lifecycle", true)) }
-    var backStackDone by remember { mutableStateOf(prefs.getBoolean("learning.back-stack", false)) }
-    var plan by remember { mutableStateOf(prefs.getString("learning.plan", "15.30–16.00 · IF570").orEmpty()) }
+    val database = remember(context) { StudentHubDatabase.get(context) }
+    val state = rememberAcademicState() ?: return
+    val isEn = LocalAppLanguage.current == AppLanguage.ENGLISH
     var goalOpen by rememberSaveable { mutableStateOf(false) }
-    var planOpen by rememberSaveable { mutableStateOf(false) }
-    var sessionOpen by rememberSaveable { mutableStateOf(false) }
+    var addPlanOpen by rememberSaveable { mutableStateOf(false) }
+    var statusNotice by remember { mutableStateOf<String?>(null) }
+
+    val plans = state.studyPlans
+    val completedPlans = plans.count { it.completed }
+    val totalPlans = plans.size
+    val planProgress = if (totalPlans > 0) completedPlans.toFloat() / totalPlans else 0f
+    val planPercent = if (totalPlans > 0) (completedPlans * 100 / totalPlans) else 0
+
     AcademicBody {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Headline(if (org.umn.application.studenthub.ui.localization.LocalAppLanguage.current == org.umn.application.studenthub.ui.localization.AppLanguage.ENGLISH) "Study Recommendations" else "Fokus kecil, hasil besar.")
-            BodyText(lString("Prioritas dari mata kuliah, nilai sementara, dan tenggatmu.", "Priorities from your courses, interim grades, and deadlines."))
+            Headline(if (isEn) "Study Recommendations" else "Rekomendasi Belajar")
+            BodyText(lString("Prioritas dari mata kuliah, nilai sementara, dan rencana belajarmu.", "Priorities based on your courses, interim grades, and study plans."))
             ChoiceChip(lString("Target IPK: ${decimal(state.goal)}", "GPA Target: ${decimal(state.goal)}"), true) { goalOpen = true }
         }
-        SummaryCard {
-            SectionTitle(lString("PRIORITAS HARI INI", "TODAY'S PRIORITY"), if (backStackDone) "100%" else "80%")
-            Text(lString("Tuntaskan latihan navigasi", "Complete navigation exercises"), style = MaterialTheme.typography.titleLarge)
-            BodyText("IF570 · " + lString("${if (backStackDone) 5 else 4} dari 5 latihan selesai", "${if (backStackDone) 5 else 4} of 5 exercises completed"))
-            Progress(if (backStackDone) 1f else 0.8f)
-            BodyText(lString("Praktikum 3 jatuh tempo hari ini, 17.00. Selesaikan 1 latihan back stack sebelum mengumpulkan.", "Practicum 3 due today at 17.00. Complete 1 back stack exercise before submitting."))
-            Button(onClick = { sessionOpen = true }) { Text(if (backStackDone) lString("Tinjau target", "Review target") else lString("Lanjutkan target", "Continue target")) }
+        statusNotice?.let { notice ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = notice,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                )
+            }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionTitle(lString("Berikutnya untukmu", "Next for you"))
-            val appPrefs = remember(context) { context.getSharedPreferences("studenthub_prefs", Context.MODE_PRIVATE) }
-            val isOnboarded = prefs.getBoolean("onboarding_completed", false) || appPrefs.getBoolean("has_completed_onboarding", false)
-            if (isOnboarded) {
-                RecommendationRow("IF590 · " + lString("PERSIAPAN RISET", "RESEARCH PREPARATION"), lString("Kajian literatur metodologi", "Methodology literature review"), lString("Nilai ${state.grades["IF590"]?.score ?: 85} · target 90 · 45 menit", "Score ${state.grades["IF590"]?.score ?: 85} · target 90 · 45 mins"))
-                BodyText(lString("Kumpulkan 3 paper terkait topik skripsi sebelum asistensi Rabu, 14 Okt.", "Collect 3 relevant papers for thesis topic before assistance Wednesday, Oct 14."))
-                Divider()
-                RecommendationRow("IF542 · " + lString("SIAPKAN PRAKTIKUM", "PREPARE LAB"), lString("Eksperimen PyTorch tensor", "PyTorch tensor experiment"), lString("Nilai ${state.grades["IF542"]?.score ?: 85} · 30 menit · Kamis, 15 Okt", "Score ${state.grades["IF542"]?.score ?: 85} · 30 mins · Thursday, Oct 15"))
-                BodyText(lString("Ulas konsep backpropagation dan implementasi autograd sebelum sesi lab.", "Review backpropagation concepts and autograd implementation before lab session."))
+        org.umn.application.studenthub.ui.notes.StudentProgressAndScheduleSection(
+            database = database,
+            refreshTrigger = plans.size + completedPlans,
+            onFeedback = { msg ->
+                statusNotice = msg
+                runCatching { state.reloadFromDatabase() }
+            }
+        )
+        SummaryCard {
+            SectionTitle(lString("Prioritas hari ini", "Today's priority"), "$planPercent%")
+            if (plans.isEmpty()) {
+                Text(lString("Belum ada rencana belajar", "No study plans yet"), style = MaterialTheme.typography.titleLarge)
+                BodyText(lString("Tambahkan rencana belajar harianmu untuk memantau progres belajar.", "Add your daily study plan to track study progress."))
             } else {
-                RecommendationRow("IF510 · " + lString("PERKUAT PEMAHAMAN", "DEEPEN UNDERSTANDING"), lString("Latihan optimasi query", "Query optimization practice"), lString("Nilai ${state.grades["IF510"]?.score ?: 74} · target 80 · 45 menit", "Score ${state.grades["IF510"]?.score ?: 74} · target 80 · 45 mins"))
-                BodyText(lString("Kerjakan 5 soal indeks dan baca ulang catatan B-tree. Kuis dijadwalkan Kamis, 8 Okt.", "Solve 5 index exercises and re-read B-tree notes. Quiz scheduled Thursday, Oct 8."))
-                Divider()
-                RecommendationRow("IF550 · " + lString("SIAPKAN TENGGAT", "PREPARE DEADLINE"), lString("Ulas pola arsitektur", "Review architecture patterns"), lString("Nilai ${state.grades["IF550"]?.score ?: 82} · 30 menit · Selasa, 6 Okt", "Score ${state.grades["IF550"]?.score ?: 82} · 30 mins · Tuesday, Oct 6"))
-                BodyText(lString("Bandingkan MVC dan MVVM sebelum tugas diagram arsitektur, Rabu, 7 Okt.", "Compare MVC and MVVM before architecture diagram assignment, Wednesday, Oct 7."))
+                val nextPlan = plans.firstOrNull { !it.completed } ?: plans.first()
+                Text(nextPlan.title, style = MaterialTheme.typography.titleLarge)
+                BodyText(
+                    (if (nextPlan.courseId.isNotBlank()) "${nextPlan.courseId} · " else "") +
+                        lString("$completedPlans dari $totalPlans rencana selesai", "$completedPlans of $totalPlans plans completed")
+                )
+                Progress(planProgress)
+                if (nextPlan.detail.isNotBlank()) {
+                    BodyText(nextPlan.detail)
+                }
+            }
+            Button(onClick = { addPlanOpen = true }) {
+                Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(lString("Tambah Rencana Belajar", "Add Study Plan"))
             }
         }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionTitle(lString("Rencana belajar hari ini", "Today's study plan"), lString("Ubah", "Edit")) { planOpen = true }
-            TaskRow(AcademicTask("lifecycle", "IF570", lString("Ulangi Activity lifecycle", "Review Activity lifecycle"), "20 menit · " + if (lifecycleDone) lString("Selesai pukul 08.00", "Completed at 08.00") else lString("Belum selesai", "Not completed")), lifecycleDone, {
-                lifecycleDone = !lifecycleDone
-                prefs.edit().putBoolean("learning.lifecycle", lifecycleDone).apply()
-            })
-            Divider()
-            TaskRow(AcademicTask("back-stack", "IF570", lString("Latihan back stack", "Back stack exercise"), plan), backStackDone, {
-                backStackDone = !backStackDone
-                prefs.edit().putBoolean("learning.back-stack", backStackDone).apply()
-            })
+            SectionTitle(lString("Berikutnya untukmu", "Next for you"))
+            val courses = state.currentCourses()
+            val activeTasks = state.tasks.filter { state.completion[it.id] != true }
+            if (courses.isEmpty() && activeTasks.isEmpty()) {
+                BodyText(lString("Belum ada rekomendasi. Tambahkan mata kuliah atau tugas terlebih dahulu.", "No recommendations yet. Add courses or tasks first."))
+            } else {
+                activeTasks.take(3).forEachIndexed { idx, task ->
+                    RecommendationRow(
+                        overline = "${task.courseId} · " + lString("Tugas aktif", "Active task"),
+                        title = task.title,
+                        supporting = task.deadline.ifBlank { task.detail.ifBlank { lString("Segera selesaikan tugas ini", "Complete this task soon") } }
+                    )
+                    if (idx < activeTasks.take(3).lastIndex || courses.isNotEmpty()) Divider()
+                }
+                if (activeTasks.isEmpty()) {
+                    courses.take(3).forEachIndexed { idx, course ->
+                        val grade = state.grades[course.id]
+                        val gradeText = if (grade != null) lString("Skor saat ini ${grade.score} (${grade.letter})", "Current score ${grade.score} (${grade.letter})") else lString("Belum ada nilai", "No grade yet")
+                        RecommendationRow(
+                            overline = "${course.id} · ${course.sks} SKS",
+                            title = lString("Ulas materi ${course.title}", "Review ${course.title}"),
+                            supporting = gradeText
+                        )
+                        if (idx < courses.take(3).lastIndex) Divider()
+                    }
+                }
+            }
         }
-        BodyText(lString("Saran ini adalah panduan. Sesuaikan target dan waktu belajar dengan kebutuhanmu.", "These suggestions are a guide. Adjust study targets and schedule according to your needs."))
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionTitle(lString("Rencana belajar hari ini", "Today's study plan"), lString("Tambah", "Add")) { addPlanOpen = true }
+            if (plans.isEmpty()) {
+                BodyText(lString("Belum ada daftar rencana belajar.", "No study plan items yet."))
+            } else {
+                plans.forEachIndexed { index, item ->
+                    val planTask = AcademicTask(
+                        id = item.id,
+                        courseId = item.courseId,
+                        title = item.title,
+                        detail = listOf(item.courseId, item.detail).filter { it.isNotBlank() }.joinToString(" · "),
+                        initiallyDone = item.completed
+                    )
+                    TaskRow(
+                        task = planTask,
+                        checked = item.completed,
+                        onToggle = { state.toggleStudyPlan(item.id) },
+                        onDelete = { state.deleteStudyPlan(item.id) }
+                    )
+                    if (index < plans.lastIndex) Divider()
+                }
+            }
+        }
     }
     if (goalOpen) GoalDialog(state) { goalOpen = false }
-    if (planOpen) TextEditDialog(lString("Rencana belajar hari ini", "Today's study plan"), lString("Waktu / rencana latihan", "Time / exercise plan"), plan, { planOpen = false }) {
-        if (it.isBlank()) false else {
-            plan = it.trim(); prefs.edit().putString("learning.plan", plan).apply(); planOpen = false; true
-        }
+    if (addPlanOpen) {
+        AddStudyPlanDialog(
+            courses = state.currentCourses().map { it.id },
+            onDismiss = { addPlanOpen = false },
+            onSave = { courseId, title, detail ->
+                val ok = state.addStudyPlan(courseId, title, detail)
+                if (ok) addPlanOpen = false
+                ok
+            }
+        )
     }
-    if (sessionOpen) AlertDialog(onDismissRequest = { sessionOpen = false }, title = { Text(lString("Latihan back stack", "Back stack practice")) },
-        text = { BodyText(lString("Selesaikan 1 latihan back stack sebelum mengumpulkan. Tandai selesai setelah kamu mengerjakannya; status ini hanya disimpan di perangkat.", "Complete 1 back stack exercise before submitting. Mark done after you finish; this status is saved only on device.")) },
-        confirmButton = { TextButton(onClick = {
-            backStackDone = true; prefs.edit().putBoolean("learning.back-stack", true).apply(); sessionOpen = false
-        }) { Text(lString("Tandai selesai", "Mark completed")) } }, dismissButton = { TextButton(onClick = { sessionOpen = false }) { Text(lString("Kembali", "Back")) } })
+}
+
+@Composable
+private fun AddStudyPlanDialog(
+    courses: List<String>,
+    onDismiss: () -> Unit,
+    onSave: (courseId: String, title: String, detail: String) -> Boolean
+) {
+    var title by rememberSaveable { mutableStateOf("") }
+    var courseId by rememberSaveable { mutableStateOf("") }
+    var detail by rememberSaveable { mutableStateOf("") }
+    var error by rememberSaveable { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(lString("Tambah Rencana Belajar", "Add Study Plan")) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it; error = false },
+                    label = { Text(lString("Topik / Kegiatan Belajar", "Study Topic / Activity")) },
+                    isError = error && title.isBlank(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = courseId,
+                    onValueChange = { courseId = it },
+                    label = { Text(lString("Kode Mata Kuliah (opsional)", "Course Code (optional)")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (courses.isNotEmpty()) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        courses.forEach { code ->
+                            FilterChip(
+                                selected = courseId == code,
+                                onClick = { courseId = code },
+                                label = { Text(code) }
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = detail,
+                    onValueChange = { detail = it },
+                    label = { Text(lString("Waktu / Durasi (opsional)", "Time / Duration (optional)")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (error) {
+                    Text(
+                        lString("Topik rencana belajar wajib diisi.", "Study topic is required."),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (!onSave(courseId, title, detail)) error = true
+            }) { Text(lString("Simpan", "Save")) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(lString("Batal", "Cancel")) }
+        }
+    )
 }
 
 @Composable
 private fun RecommendationRow(overline: String, title: String, supporting: String) {
-    ListItem(overlineContent = { Text(overline) }, headlineContent = { Text(title) }, supportingContent = { BodyText(supporting) },
-        leadingContent = { Icon(Icons.Default.School, null) }, colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface))
+    ListItem(
+        overlineContent = { Text(overline) },
+        headlineContent = { Text(title) },
+        supportingContent = { BodyText(supporting) },
+        leadingContent = { Icon(Icons.Default.School, null) },
+        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface)
+    )
 }
 
 @Composable
 private fun GoalDialog(state: AcademicState, onDismiss: () -> Unit) {
-    TextEditDialog(lString("Target belajar", "Study target"), lString("Target IPK (0–4)", "GPA target (0–4)"), decimal(state.goal), onDismiss) { value ->
-        withContext(Dispatchers.IO) { state.updateGoal(value) }.also { if (it) onDismiss() }
+    TextEditDialog(
+        lString("Target belajar", "Study target"),
+        lString("Target IPK (0-4)", "GPA target (0-4)"),
+        if (state.goal > 0.0) decimal(state.goal) else "",
+        onDismiss
+    ) { value ->
+        state.updateGoal(value).also { if (it) onDismiss() }
     }
 }
 
@@ -560,35 +957,47 @@ private fun TextEditDialog(title: String, label: String, initial: String, onDism
     var saving by remember { mutableStateOf(false) }
     var value by rememberSaveable { mutableStateOf(initial) }
     var error by rememberSaveable { mutableStateOf(false) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
-        OutlinedTextField(value, { value = it; error = false }, label = { Text(label) }, isError = error,
-            supportingText = if (error) { { Text(lString("Periksa kembali nilai yang dimasukkan.", "Please check the entered value.")) } } else null)
-    }, confirmButton = { TextButton(enabled = !saving, onClick = {
-        saving = true
-        scope.launch { error = !runCatching { onSave(value) }.getOrDefault(false); saving = false }
-    }) { Text(lString("Simpan", "Save")) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(lString("Batal", "Cancel")) } })
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it; error = false },
+                label = { Text(label) },
+                isError = error,
+                supportingText = if (error) {
+                    { Text(lString("Periksa kembali nilai yang dimasukkan.", "Please check the entered value.")) }
+                } else null
+            )
+        },
+        confirmButton = {
+            TextButton(enabled = !saving, onClick = {
+                saving = true
+                scope.launch {
+                    error = !runCatching { onSave(value) }.getOrDefault(false)
+                    saving = false
+                }
+            }) { Text(lString("Simpan", "Save")) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(lString("Batal", "Cancel")) } }
+    )
 }
 
-/** Scrollable content only. Navigation and system bars belong to the host Scaffold. */
 @Composable
 fun AcademicScreen(onCourseClick: (String) -> Unit) {
     val state = rememberAcademicState() ?: return
     val context = LocalContext.current
     val database = remember(context) { StudentHubDatabase.get(context) }
-    val isEn = LocalAppLanguage.current == AppLanguage.ENGLISH
     var allTasks by rememberSaveable { mutableStateOf(false) }
+    var showAddCourseDialog by rememberSaveable { mutableStateOf(false) }
 
-    val prefs = remember(context) { context.getSharedPreferences("academic", Context.MODE_PRIVATE) }
-    val appPrefs = remember(context) { context.getSharedPreferences("studenthub_prefs", Context.MODE_PRIVATE) }
-    val isOnboarded = prefs.getBoolean("onboarding_completed", false) || appPrefs.getBoolean("has_completed_onboarding", false)
+    val dbProfile = remember(state.courses) { runCatching { database.profile() }.getOrNull() }
+    val studentName = dbProfile?.name?.takeIf { it.isNotBlank() } ?: lString("Mahasiswa", "Student")
+    val program = dbProfile?.program?.takeIf { it.isNotBlank() } ?: lString("Program Studi", "Study Program")
+    val semesterNum = dbProfile?.semester ?: 1
 
-    val dbProfile = remember { runCatching { database.profile() }.getOrNull() }
-    val studentName = dbProfile?.name?.takeIf { it.isNotBlank() } ?: "Nadia Putri"
-    val program = dbProfile?.program?.takeIf { it.isNotBlank() } ?: lString("Informatika", "Computer Science")
-    val semesterNum = dbProfile?.semester ?: 5
-
-    val coursesToDisplay = if (isOnboarded) semester5Courses else academicCourses
+    val coursesToDisplay = state.currentCourses()
     val totalSks = coursesToDisplay.sumOf { it.sks }
     val courseCount = coursesToDisplay.size
     val activeTasksCount = state.activeTaskCount
@@ -598,17 +1007,10 @@ fun AcademicScreen(onCourseClick: (String) -> Unit) {
             Headline("Semester $semesterNum")
             BodyText("$program • $studentName")
             Text(
-                if (isOnboarded) {
-                    lString(
-                        "$courseCount mata kuliah · $totalSks SKS · $activeTasksCount tugas aktif",
-                        "$courseCount courses · $totalSks credits · $activeTasksCount active tasks"
-                    )
-                } else {
-                    lString(
-                        "4 mata kuliah · 12 SKS · $activeTasksCount tugas aktif",
-                        "4 courses · 12 credits · $activeTasksCount active tasks"
-                    )
-                },
+                lString(
+                    "$courseCount mata kuliah · $totalSks SKS · $activeTasksCount tugas aktif",
+                    "$courseCount courses · $totalSks credits · $activeTasksCount active tasks"
+                ),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -620,39 +1022,177 @@ fun AcademicScreen(onCourseClick: (String) -> Unit) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionTitle(lString("Perlu diselesaikan", "To complete"), lString("$activeTasksCount tugas", "$activeTasksCount tasks"))
             val currentCourseIds = coursesToDisplay.map { it.id }.toSet()
-            val activeTasksList = state.tasks.filter { it.courseId in currentCourseIds && !it.initiallyDone }
-            val tasks = if (allTasks) activeTasksList else activeTasksList.take(2)
+            val activeTasksList = state.tasks.filter { it.courseId in currentCourseIds && state.completion[it.id] != true }
+            val tasks = if (allTasks) activeTasksList else activeTasksList.take(3)
             tasks.forEachIndexed { index, task ->
-                TaskRow(task, state.completion[task.id] == true, { state.toggleTask(task.id) }, compact = true)
+                TaskRow(
+                    task = task,
+                    checked = state.completion[task.id] == true,
+                    onToggle = { state.toggleTask(task.id) },
+                    onToggleReminder = { state.toggleTaskReminder(task.id) },
+                    onDelete = { state.deleteTask(task.id) },
+                    compact = true
+                )
                 if (index < tasks.lastIndex) Divider()
             }
             if (tasks.isEmpty()) {
-                BodyText(lString("Semua tugas telah diselesaikan!", "All tasks have been completed!"))
-            } else if (allTasks && !isOnboarded) {
-                BodyText(lString("IF510 memiliki 1 tugas aktif. Detail tugas belum tersedia pada data lokal.", "IF510 has 1 active task. Task details not available in local data."))
+                BodyText(lString("Tidak ada tugas aktif saat ini.", "No active tasks at the moment."))
             }
         }
-        if (!allTasks) Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionTitle(lString("Mata kuliahmu", "Your courses"))
-            coursesToDisplay.forEach { course ->
-                val completed = state.completedFor(course.id)
-                val total = state.totalFor(course.id)
-                val remaining = total - completed
-                val courseTitle = if (isEn) getCourseEnglishTitle(course.id, course.title) else getCourseIndonesianTitle(course.id, course.title)
-                val sksLabel = lString("SKS", "credits")
-                Column(Modifier.fillMaxWidth().testTag("course-${course.id}").clickable { onCourseClick(course.id) }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ListItem(
-                        headlineContent = { Text(courseTitle) },
-                        overlineContent = { Text(course.id) },
-                        supportingContent = { BodyText("${course.sks} $sksLabel · " + if (remaining == 0) lString("Tidak ada tugas aktif", "No active tasks") else lString("$remaining tugas aktif", "$remaining active tasks")) },
-                        trailingContent = { Text("›") },
-                        colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
-                    )
-                    Progress(if (total > 0) completed.toFloat() / total else 0f)
-                    BodyText(lString("$completed dari $total tugas selesai", "$completed of $total tasks completed"))
-                    Divider()
+        if (!allTasks) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SectionTitle(lString("Mata kuliahmu", "Your courses"), lString("Tambah", "Add")) {
+                    showAddCourseDialog = true
+                }
+                if (coursesToDisplay.isEmpty()) {
+                    SummaryCard {
+                        Text(lString("Belum ada mata kuliah", "No courses yet"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        BodyText(lString("Tambahkan mata kuliah dan jadwal kuliah semester ini.", "Add your courses and class schedule for this semester."))
+                        Button(onClick = { showAddCourseDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(lString("Tambah Mata Kuliah", "Add Course"))
+                        }
+                    }
+                } else {
+                    coursesToDisplay.forEach { course ->
+                        val completed = state.completedFor(course.id)
+                        val total = state.totalFor(course.id)
+                        val remaining = (total - completed).coerceAtLeast(0)
+                        val sksLabel = lString("SKS", "credits")
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .testTag("course-${course.id}")
+                                .clickable { onCourseClick(course.id) },
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ListItem(
+                                headlineContent = { Text(course.title) },
+                                overlineContent = { Text(course.id) },
+                                supportingContent = {
+                                    BodyText(
+                                        "${course.sks} $sksLabel · " +
+                                            if (remaining == 0) lString("Tidak ada tugas aktif", "No active tasks")
+                                            else lString("$remaining tugas aktif", "$remaining active tasks")
+                                    )
+                                },
+                                trailingContent = { Text("›") },
+                                colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                            )
+                            Progress(if (total > 0) completed.toFloat() / total else 0f)
+                            BodyText(lString("$completed dari $total tugas selesai", "$completed of $total tasks completed"))
+                            Divider()
+                        }
+                    }
+                    OutlinedButton(onClick = { showAddCourseDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(lString("Tambah Mata Kuliah", "Add Course"))
+                    }
                 }
             }
         }
+    }
+
+    if (showAddCourseDialog) {
+        val today = remember { java.time.LocalDate.now() }
+        val todayDayIndex = (today.dayOfWeek.value - 1).coerceIn(0, 6)
+        var addCode by remember { mutableStateOf("") }
+        var addTitle by remember { mutableStateOf("") }
+        var addSks by remember { mutableStateOf("") }
+        var addDay by remember { mutableIntStateOf(todayDayIndex) }
+        var addTime by remember { mutableStateOf("") }
+        var addEndTime by remember { mutableStateOf("") }
+        var addRoom by remember { mutableStateOf("") }
+        var addLecturer by remember { mutableStateOf("") }
+        var addError by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showAddCourseDialog = false },
+            title = { Text(lString("Tambah Mata Kuliah", "Add Course")) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CurriculumCourseDropdown(
+                        currentSemester = semesterNum,
+                        selectedTitle = addTitle,
+                        onCourseSelected = { c ->
+                            if (c != null) {
+                                addCode = c.code
+                                addTitle = c.title
+                                addSks = c.sks.toString()
+                                addError = false
+                            } else {
+                                addCode = ""
+                                addTitle = ""
+                                addSks = ""
+                            }
+                        }
+                    )
+                    OutlinedTextField(addCode, { addCode = it; addError = false }, label = { Text(lString("Kode Mata Kuliah", "Course Code")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(addTitle, { addTitle = it; addError = false }, label = { Text(lString("Nama Mata Kuliah", "Course Name")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(
+                        addSks,
+                        { addSks = it.filter { ch -> ch.isDigit() }; addError = false },
+                        label = { Text(lString("Jumlah SKS (1-24)", "Credits / SKS (1-24)")) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Text(lString("Jam Perkuliahan (Mulai - Selesai, opsional):", "Class Hours (Start - End, optional):"), style = MaterialTheme.typography.labelMedium)
+                    org.umn.application.studenthub.ui.components.TimeRangePickerRow(
+                        startTime = addTime,
+                        endTime = addEndTime,
+                        onStartTimeChange = { addTime = it; addError = false },
+                        onEndTimeChange = { addEndTime = it; addError = false }
+                    )
+                    OutlinedTextField(addRoom, { addRoom = it }, label = { Text(lString("Ruangan (opsional)", "Room (optional)")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(addLecturer, { addLecturer = it }, label = { Text(lString("Nama Dosen (opsional)", "Lecturer Name (optional)")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    Text(lString("Hari Kuliah (jika ada jadwal):", "Class Day (if scheduled):"), style = MaterialTheme.typography.labelMedium)
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf(
+                            lString("Sen", "Mon"),
+                            lString("Sel", "Tue"),
+                            lString("Rab", "Wed"),
+                            lString("Kam", "Thu"),
+                            lString("Jum", "Fri"),
+                            lString("Sab", "Sat"),
+                            lString("Min", "Sun")
+                        ).forEachIndexed { i, d ->
+                            FilterChip(selected = addDay == i, onClick = { addDay = i }, label = { Text(d) })
+                        }
+                    }
+                    if (addError) {
+                        Text(
+                            lString("Isi kode, nama mata kuliah, dan SKS (1-24) dengan benar.", "Please fill in course code, name, and credits (1-24) correctly."),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val sksNum = addSks.toIntOrNull()
+                    val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(addTime, addEndTime)
+                    if (addCode.isNotBlank() && addTitle.isNotBlank() && sksNum != null && sksNum in 1..24) {
+                        val ok = state.addCourse(
+                            code = addCode,
+                            title = addTitle,
+                            sks = sksNum,
+                            semester = semesterNum,
+                            lecturer = addLecturer,
+                            room = addRoom,
+                            day = if (addTime.isNotBlank() || addEndTime.isNotBlank()) addDay else null,
+                            time = combinedTime
+                        )
+                        if (ok) showAddCourseDialog = false else addError = true
+                    } else {
+                        addError = true
+                    }
+                }) { Text(lString("Simpan", "Save")) }
+            },
+            dismissButton = { TextButton(onClick = { showAddCourseDialog = false }) { Text(lString("Batal", "Cancel")) } }
+        )
     }
 }

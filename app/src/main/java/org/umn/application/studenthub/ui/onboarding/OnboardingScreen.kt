@@ -1,11 +1,7 @@
 package org.umn.application.studenthub.ui.onboarding
 
-import android.content.Context
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -30,12 +26,12 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.umn.application.studenthub.data.local.AgendaRow
 import org.umn.application.studenthub.data.local.CourseRow
-import org.umn.application.studenthub.data.local.GradeRow
 import org.umn.application.studenthub.data.local.ProfileRow
 import org.umn.application.studenthub.data.local.StudentHubDatabase
 import org.umn.application.studenthub.data.local.TransactionRow
+import org.umn.application.studenthub.ui.components.CurriculumCourseDropdown
+import org.umn.application.studenthub.ui.dashboard.computeClassTimeRange
 import org.umn.application.studenthub.ui.localization.lString
 import java.time.LocalDate
 import java.util.UUID
@@ -44,7 +40,7 @@ internal data class OnboardingCourseItem(
     val code: String,
     val title: String,
     val sks: Int,
-    val day: Int, // 0 = Senin, 1 = Selasa, etc.
+    val day: Int,
     val time: String,
     val room: String,
     val lecturer: String
@@ -57,36 +53,24 @@ fun OnboardingScreen(onFinished: () -> Unit) {
     val scope = rememberCoroutineScope()
     var step by rememberSaveable { mutableIntStateOf(1) }
 
-    // Step 1: Identitas
-    var name by rememberSaveable { mutableStateOf("Nadia Putri") }
-    var program by rememberSaveable { mutableStateOf("Informatika") }
+    var name by rememberSaveable { mutableStateOf("") }
+    var program by rememberSaveable { mutableStateOf("") }
     var nameError by rememberSaveable { mutableStateOf(false) }
+    var programError by rememberSaveable { mutableStateOf(false) }
 
-    // Step 2: Semester
-    var semesterText by rememberSaveable { mutableStateOf("5") }
+    var semesterText by rememberSaveable { mutableStateOf("") }
     var semesterError by rememberSaveable { mutableStateOf(false) }
 
-    // Step 3: Riwayat IPK (jika semester > 1)
     var inputPriorGpa by rememberSaveable { mutableStateOf(true) }
-    var priorGpaText by rememberSaveable { mutableStateOf("3.15") }
+    var priorGpaText by rememberSaveable { mutableStateOf("") }
+    var priorSksText by rememberSaveable { mutableStateOf("") }
     var priorGpaError by rememberSaveable { mutableStateOf(false) }
+    var priorSksError by rememberSaveable { mutableStateOf(false) }
 
-    // Step 4: Uang saku bulanan
-    var allowanceText by rememberSaveable { mutableStateOf("2000000") }
+    var allowanceText by rememberSaveable { mutableStateOf("") }
     var allowanceError by rememberSaveable { mutableStateOf(false) }
 
-    // Step 5: List Mata Kuliah & Jadwal (Default Semester 5: 19 SKS)
-    val defaultCourses = remember {
-        mutableStateListOf(
-            OnboardingCourseItem("EM105", "Technopreneurship", 3, 0, "08.00", "C.401", "Dosen Pengampu"),
-            OnboardingCourseItem("UM321", "English 3", 2, 0, "11.00", "B.201", "Dosen Pengampu"),
-            OnboardingCourseItem("IF570", "Mobile Application Programming", 3, 1, "09.00", "D.302", "Budi Santoso, M.Kom."),
-            OnboardingCourseItem("IF590", "Information Technology Research", 2, 2, "10.00", "D.201", "Dosen Pengampu"),
-            OnboardingCourseItem("IF542", "Deep Learning", 3, 3, "08.00", "Lab AI", "Dosen Pengampu"),
-            OnboardingCourseItem("IF571", "Cybersecurity", 3, 3, "13.00", "Lab Cyber", "Dosen Pengampu"),
-            OnboardingCourseItem("IF581", "Game Development", 3, 4, "09.00", "Lab Game", "Dosen Pengampu")
-        )
-    }
+    val courses = remember { mutableStateListOf<OnboardingCourseItem>() }
     var showAddCourseDialog by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
 
@@ -99,12 +83,13 @@ fun OnboardingScreen(onFinished: () -> Unit) {
         lString("Sabtu", "Saturday"),
         lString("Minggu", "Sunday")
     )
+    val daysId = listOf("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
     val totalSteps = 5
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(lString("Mulai Menggunakan StudentHub", "Get Started with StudentHub")) },
+                title = { Text(lString("Setup Awal StudentHub", "StudentHub Setup")) },
                 navigationIcon = {
                     if (step > 1) {
                         IconButton(onClick = { step-- }) {
@@ -123,7 +108,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                 .padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // Stepper progress indicator
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -158,16 +142,18 @@ fun OnboardingScreen(onFinished: () -> Unit) {
             }
 
             when (step) {
-                // STEP 1: NAMA & PROGRAM STUDI
                 1 -> {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text(
-                            text = lString("Halo, selamat datang!", "Hello, welcome!"),
+                            text = lString("Profil Mahasiswa", "Student Profile"),
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = lString("Kenalkan dirimu agar StudentHub dapat mempersonalisasi jadwal, nilai, dan keuanganmu.", "Introduce yourself so StudentHub can personalize your schedule, grades, and finances."),
+                            text = lString(
+                                "Masukkan nama dan program studimu.",
+                                "Enter your name and study program."
+                            ),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -185,32 +171,43 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                             isError = nameError,
                             supportingText = {
                                 if (nameError) Text(lString("Nama lengkap wajib diisi", "Full name is required"))
-                                else Text(lString("Contoh: Nadia Putri", "Example: Nadia Putri"))
+                                else Text(lString("Masukkan nama lengkapmu", "Enter your full name"))
                             },
                             singleLine = true
                         )
 
                         OutlinedTextField(
                             value = program,
-                            onValueChange = { program = it },
-                            modifier = Modifier.fillMaxWidth(),
+                            onValueChange = {
+                                program = it
+                                programError = it.isBlank()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("onboarding-program"),
                             label = { Text(lString("Program Studi", "Study Program")) },
-                            supportingText = { Text(lString("Contoh: Informatika / Sistem Informasi", "Example: Informatics / Information Systems")) },
+                            isError = programError,
+                            supportingText = {
+                                if (programError) Text(lString("Program studi wajib diisi", "Study program is required"))
+                                else Text(lString("Masukkan program studimu", "Enter your study program"))
+                            },
                             singleLine = true
                         )
                     }
                 }
 
-                // STEP 2: SEMESTER
                 2 -> {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text(
-                            text = lString("Semester berapa kamu saat ini?", "Which semester are you in?"),
+                            text = lString("Semester Berjalan", "Current Semester"),
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = lString("Pilih atau masukkan semester berjalan untuk menyusun beban SKS dan riwayat akademikmu.", "Select or enter your current semester to organize your credits and academic history."),
+                            text = lString(
+                                "Masukkan semester aktif saat ini (1-14) untuk menyusun beban SKS dan riwayat akademikmu.",
+                                "Enter your current active semester (1-14) to organize your credits and academic history."
+                            ),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -225,7 +222,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("onboarding-semester"),
-                            label = { Text(lString("Semester (1–14)", "Semester (1–14)")) },
+                            label = { Text(lString("Semester (1-14)", "Semester (1-14)")) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             isError = semesterError,
                             supportingText = {
@@ -234,30 +231,11 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                             },
                             singleLine = true
                         )
-
-                        Text(lString("Pilih cepat semester:", "Quick select semester:"), style = MaterialTheme.typography.labelLarge)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf(1, 3, 5, 7).forEach { sem ->
-                                FilterChip(
-                                    selected = semesterText == sem.toString(),
-                                    onClick = {
-                                        semesterText = sem.toString()
-                                        semesterError = false
-                                    },
-                                    label = { Text("Sem $sem") },
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
                     }
                 }
 
-                // STEP 3: RIWAYAT IPK
                 3 -> {
-                    val currentSem = semesterText.toIntOrNull() ?: 5
+                    val currentSem = semesterText.toIntOrNull() ?: 1
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text(
                             text = lString("Riwayat IPK Sebelumnya", "Previous GPA History"),
@@ -271,11 +249,11 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(lString("🎉 Mahasiswa Baru Semester 1", "🎉 New Student - Semester 1"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    Text(lString("Mahasiswa Semester 1", "Semester 1 Student"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                     Text(
                                         lString(
-                                            "Sebagai mahasiswa semester 1, kamu memulai perjalanan akademik dari lembaran baru. Nilai dan IPK-mu akan dihitung dari mata kuliah semester ini.",
-                                            "As a 1st semester student, you are starting your academic journey with a clean slate. Your grades and GPA will be calculated from this semester's courses."
+                                            "Riwayat IPK dimulai dari 0 dan dihitung dari mata kuliah yang kamu tambahkan semester ini.",
+                                            "Prior GPA starts at 0 and will be calculated from the courses you add this semester."
                                         ),
                                         style = MaterialTheme.typography.bodyMedium
                                     )
@@ -284,8 +262,8 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                         } else {
                             Text(
                                 text = lString(
-                                    "Karena kamu sudah berada di semester $currentSem, apakah kamu ingin memasukkan IPK kumulatif dari semester 1 hingga ${currentSem - 1}?",
-                                    "Since you are in semester $currentSem, would you like to enter your cumulative GPA from semester 1 to ${currentSem - 1}?"
+                                    "Masukkan IPK kumulatif dan total SKS dari semester 1 hingga ${currentSem - 1}, atau pilih belum ada riwayat.",
+                                    "Enter your cumulative GPA and total credits from semester 1 to ${currentSem - 1}, or choose no prior history."
                                 ),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -295,12 +273,16 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                                 FilterChip(
                                     selected = inputPriorGpa,
                                     onClick = { inputPriorGpa = true },
-                                    label = { Text(lString("Ya, masukkan IPK lalu", "Yes, enter prior GPA")) }
+                                    label = { Text(lString("Masukkan IPK lalu", "Enter prior GPA")) }
                                 )
                                 FilterChip(
                                     selected = !inputPriorGpa,
-                                    onClick = { inputPriorGpa = false },
-                                    label = { Text(lString("Gunakan estimasi (3.50)", "Use estimate (3.50)")) }
+                                    onClick = {
+                                        inputPriorGpa = false
+                                        priorGpaError = false
+                                        priorSksError = false
+                                    },
+                                    label = { Text(lString("Kosongkan (Mulai dari 0)", "Leave empty (Start at 0)")) }
                                 )
                             }
 
@@ -315,12 +297,32 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .testTag("onboarding-ipk"),
-                                    label = { Text(lString("IPK Kumulatif Sebelumnya (0.00–4.00)", "Previous Cumulative GPA (0.00–4.00)")) },
+                                    label = { Text(lString("IPK Kumulatif Sebelumnya (0.00-4.00)", "Previous Cumulative GPA (0.00-4.00)")) },
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                     isError = priorGpaError,
                                     supportingText = {
-                                        if (priorGpaError) Text(lString("Masukkan nilai IPK yang valid antara 0.00 dan 4.00", "Enter a valid GPA between 0.00 and 4.00"))
-                                        else Text(lString("Contoh: 3.56 (dari ${(currentSem - 1) * 15} SKS)", "Example: 3.56 (from ${(currentSem - 1) * 15} credits)"))
+                                        if (priorGpaError) Text(lString("Masukkan nilai IPK antara 0.00 dan 4.00", "Enter a valid GPA between 0.00 and 4.00"))
+                                        else Text(lString("Masukkan IPK semester lalu", "Enter your previous GPA"))
+                                    },
+                                    singleLine = true
+                                )
+
+                                OutlinedTextField(
+                                    value = priorSksText,
+                                    onValueChange = {
+                                        priorSksText = it
+                                        val sks = it.toIntOrNull()
+                                        priorSksError = sks == null || sks !in 0..250
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("onboarding-prior-sks"),
+                                    label = { Text(lString("Total SKS Lulus Sebelumnya", "Previous Completed Credits (SKS)")) },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                    isError = priorSksError,
+                                    supportingText = {
+                                        if (priorSksError) Text(lString("Masukkan jumlah SKS antara 0 dan 250", "Enter credits between 0 and 250"))
+                                        else Text(lString("Jumlah SKS yang sudah ditempuh", "Total credits completed so far"))
                                     },
                                     singleLine = true
                                 )
@@ -329,7 +331,6 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     }
                 }
 
-                // STEP 4: PEMASUKAN BULANAN
                 4 -> {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text(
@@ -339,8 +340,8 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                         )
                         Text(
                             text = lString(
-                                "Berapa perkiraan uang saku / pemasukan bulananmu? Nominal ini akan otomatis menjadi saldo awal pencatatan keuanganmu.",
-                                "What is your estimated monthly allowance / income? This amount will automatically become your starting financial balance."
+                                "Masukkan pemasukan atau uang saku awal bulananmu (isi 0 jika belum ingin mencatat saldo awal).",
+                                "Enter your starting monthly allowance or income (enter 0 if you don't want an initial balance yet)."
                             ),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -348,67 +349,76 @@ fun OnboardingScreen(onFinished: () -> Unit) {
 
                         OutlinedTextField(
                             value = allowanceText,
-                            onValueChange = {
-                                allowanceText = it
-                                val num = it.toLongOrNull()
-                                allowanceError = num == null || num <= 0 || num > 1_000_000_000L
+                            onValueChange = { raw ->
+                                val cleaned = org.umn.application.studenthub.ui.components.cleanRupiahInput(raw)
+                                allowanceText = cleaned
+                                val num = cleaned.toLongOrNull()
+                                allowanceError = num == null || num < 0 || num > 1_000_000_000_000L
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("onboarding-allowance"),
-                            label = { Text(lString("Pemasukan Bulanan (Rp)", "Monthly Allowance (Rp)")) },
+                            label = { Text(lString("Pemasukan Awal Bulanan (Rp)", "Initial Monthly Allowance (Rp)")) },
+                            prefix = { Text("Rp ") },
+                            visualTransformation = remember { org.umn.application.studenthub.ui.components.RupiahVisualTransformation() },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             isError = allowanceError,
                             supportingText = {
-                                if (allowanceError) Text(lString("Masukkan angka bulat positif tanpa titik atau koma", "Enter a positive whole number without dots or commas"))
-                                else Text(lString("Contoh: 2000000 untuk Rp2.000.000", "Example: 2000000 for Rp2,000,000"))
+                                if (allowanceError) Text(lString("Masukkan nominal rupiah yang valid (0 atau lebih)", "Enter a valid IDR amount (0 or more)"))
+                                else Text(lString("Masukkan estimasi uang saku bulanan", "Enter your estimated monthly allowance"))
                             },
                             singleLine = true
                         )
-
-                        Text(lString("Pilih cepat nominal:", "Quick select amount:"), style = MaterialTheme.typography.labelLarge)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf(
-                                "1500000" to lString("1.5 Jt", "1.5 M"),
-                                "2000000" to lString("2 Jt", "2 M"),
-                                "2500000" to lString("2.5 Jt", "2.5 M")
-                            ).forEach { (amount, label) ->
-                                FilterChip(
-                                    selected = allowanceText == amount,
-                                    onClick = {
-                                        allowanceText = amount
-                                        allowanceError = false
-                                    },
-                                    label = { Text(label) },
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
                     }
                 }
 
-                // STEP 5: MATA KULIAH & JADWAL
                 5 -> {
                     val roomPrefix = lString("Ruang ", "Room ")
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text(
-                            text = lString("Mata Kuliah Semester Ini", "Courses This Semester"),
+                            text = lString("Mata Kuliah & Jadwal", "Courses & Schedule"),
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
                             text = lString(
-                                "Berikut adalah daftar mata kuliah dan jadwal mingguanmu. Kamu bisa menambah atau menyesuaikannya.",
-                                "Here is your course list and weekly schedule. You can add or customize them."
+                                "Tambahkan mata kuliah beserta hari, jam mulai, dan jam selesainya.",
+                                "Add your courses along with their day, start time, and end time."
                             ),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
-                        defaultCourses.forEachIndexed { index, course ->
+                        if (courses.isEmpty()) {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.School, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+                                    Text(
+                                        lString("Belum ada mata kuliah & jadwal", "No courses & schedule added yet"),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        lString(
+                                            "Tambahkan mata kuliah semester ini atau lanjutkan dan isi nanti dari menu Akademik.",
+                                            "Add this semester's courses now, or continue and add them later from Academics."
+                                        ),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        courses.forEachIndexed { index, course ->
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                                 shape = RoundedCornerShape(12.dp)
@@ -431,27 +441,31 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                                             style = MaterialTheme.typography.titleMedium,
                                             fontWeight = FontWeight.SemiBold
                                         )
+                                        val details = buildList {
+                                            add("${days[course.day]}, ${computeClassTimeRange(course.time)}")
+                                            if (course.room.isNotBlank()) add("$roomPrefix${course.room}")
+                                            if (course.lecturer.isNotBlank()) add(course.lecturer)
+                                        }.joinToString(" • ")
                                         Text(
-                                            text = "${days[course.day]}, ${course.time} • $roomPrefix${course.room} • ${course.lecturer}",
+                                            text = details,
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
-                                    IconButton(onClick = { defaultCourses.removeAt(index) }) {
+                                    IconButton(onClick = { courses.removeAt(index) }) {
                                         Icon(Icons.Default.Delete, lString("Hapus", "Delete"), tint = MaterialTheme.colorScheme.error)
                                     }
                                 }
                             }
                         }
 
-                        Button(
+                        OutlinedButton(
                             onClick = { showAddCourseDialog = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.outlinedButtonColors()
+                            modifier = Modifier.fillMaxWidth().testTag("onboarding-add-course")
                         ) {
                             Icon(Icons.Default.Add, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(lString("Tambah Mata Kuliah Lain", "Add Another Course"))
+                            Text(lString("Tambah Mata Kuliah & Jadwal", "Add Course & Schedule"))
                         }
                     }
                 }
@@ -459,13 +473,13 @@ fun OnboardingScreen(onFinished: () -> Unit) {
 
             Spacer(Modifier.weight(1f, fill = false))
 
-            // Navigation Button (Lanjut / Mulai)
             Button(
                 onClick = {
                     when (step) {
                         1 -> {
-                            if (name.isBlank()) nameError = true
-                            else step++
+                            nameError = name.isBlank()
+                            programError = program.isBlank()
+                            if (!nameError && !programError) step++
                         }
                         2 -> {
                             val s = semesterText.toIntOrNull()
@@ -473,74 +487,102 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                             else step++
                         }
                         3 -> {
-                            if (inputPriorGpa && (semesterText.toIntOrNull() ?: 5) > 1) {
+                            val currentSem = semesterText.toIntOrNull() ?: 1
+                            if (inputPriorGpa && currentSem > 1) {
                                 val gpa = priorGpaText.replace(',', '.').toDoubleOrNull()
-                                if (gpa == null || gpa !in 0.0..4.0) priorGpaError = true
-                                else step++
+                                val sks = priorSksText.toIntOrNull()
+                                priorGpaError = gpa == null || gpa !in 0.0..4.0
+                                priorSksError = sks == null || sks !in 0..250
+                                if (!priorGpaError && !priorSksError) step++
                             } else {
                                 step++
                             }
                         }
                         4 -> {
                             val a = allowanceText.toLongOrNull()
-                            if (a == null || a <= 0) allowanceError = true
+                            if (a == null || a < 0 || a > 1_000_000_000_000L) allowanceError = true
                             else step++
                         }
                         5 -> {
-                            // FINISH ONBOARDING
                             saving = true
                             scope.launch {
                                 withContext(Dispatchers.IO) {
                                     val db = StudentHubDatabase.get(context)
-                                    val semesterNum = semesterText.toIntOrNull() ?: 5
-                                    // 1. Save Profile
-                                    db.saveProfile(ProfileRow(name.trim(), program.trim(), semesterNum))
-
-                                    // 2. Save Prior GPA in Academic SharedPreferences
+                                    val semesterNum = semesterText.toIntOrNull() ?: 1
                                     val finalPriorGpa = if (inputPriorGpa && semesterNum > 1) {
-                                        priorGpaText.replace(',', '.').toDoubleOrNull() ?: 3.15
-                                    } else 3.15
-                                    val prefs = context.getSharedPreferences("academic", Context.MODE_PRIVATE)
-                                    prefs.edit()
-                                        .putString("prior_ipk", finalPriorGpa.toString())
-                                        .putString("prior_sks", ((semesterNum - 1) * 19).toString())
-                                        .putBoolean("onboarding_completed", true)
-                                        .apply()
+                                        priorGpaText.replace(',', '.').toDoubleOrNull() ?: 0.0
+                                    } else 0.0
+                                    val finalPriorSks = if (inputPriorGpa && semesterNum > 1) {
+                                        priorSksText.toIntOrNull() ?: 0
+                                    } else 0
 
-                                    // 3. Clear/empty user-fillable notes so user starts with a clean slate
-                                    val notesPrefs = context.getSharedPreferences("studenthub_notes", Context.MODE_PRIVATE)
-                                    notesPrefs.edit().putString("notes", "AAAAAA==").apply()
+                                    db.resetAllData()
 
-                                    // 4. Save initial allowance transaction in SQLite
-                                    val allowance = allowanceText.toLongOrNull() ?: 2000000L
-                                    val initialTx = TransactionRow(
-                                        id = "init-allowance-" + UUID.randomUUID().toString().take(8),
-                                        title = "Uang Saku Bulanan Awal",
-                                        amount = allowance,
-                                        category = "Lainnya",
-                                        income = true,
-                                        date = LocalDate.now().toString()
+                                    db.saveProfile(
+                                        ProfileRow(
+                                            name = name.trim(),
+                                            program = program.trim(),
+                                            semester = semesterNum,
+                                            priorIpk = finalPriorGpa,
+                                            priorSks = finalPriorSks,
+                                            onboardingCompleted = true
+                                        )
                                     )
-                                    runCatching { db.addTransaction(initialTx) }
 
-                                    // 5. Purge old demo fixtures and save Courses & Agenda
-                                    runCatching {
-                                        db.writableDatabase.delete("agenda", "id LIKE 'demo-%' OR id LIKE 'legacy-%' OR title LIKE '%Rekayasa Perangkat Lunak%'", null)
-                                        db.writableDatabase.delete("courses", "is_demo = 1 OR id IN ('IF550', 'IF510', 'IF530')", null)
+                                    val allowance = allowanceText.toLongOrNull() ?: 0L
+                                    if (allowance > 0L) {
+                                        val initialTx = TransactionRow(
+                                            id = "init-allowance-" + UUID.randomUUID().toString().take(8),
+                                            title = "Uang Saku Bulanan Awal",
+                                            amount = allowance,
+                                            category = "Lainnya",
+                                            income = true,
+                                            date = LocalDate.now().toString()
+                                        )
+                                        runCatching { db.addTransaction(initialTx) }
                                     }
-                                    defaultCourses.forEach { item ->
+
+                                    courses.forEach { item ->
+                                        val normalizedTime = StudentHubDatabase.normalizeTimeFormat(item.time)
+                                        val rangeLabel = computeClassTimeRange(normalizedTime)
+                                        val scheduleLabel = "${daysId[item.day]}, $rangeLabel"
                                         val courseRow = CourseRow(
                                             id = item.code,
                                             code = item.code,
                                             title = item.title,
                                             sks = item.sks,
                                             semester = semesterNum,
-                                            grade = GradeRow(85, "A"),
-                                            isDemo = false
+                                            grade = null,
+                                            isDemo = false,
+                                            lecturer = item.lecturer,
+                                            room = item.room,
+                                            schedule = scheduleLabel,
+                                            description = ""
                                         )
                                         runCatching { db.saveCourse(courseRow) }
                                         runCatching {
-                                            db.addAgenda(item.day, item.time, item.title)
+                                            val detailText = buildList {
+                                                add(item.code)
+                                                if (item.room.isNotBlank()) add(item.room)
+                                            }.joinToString(" • ")
+                                            db.addAgenda(
+                                                day = item.day,
+                                                time = normalizedTime,
+                                                title = item.title,
+                                                kind = "KELAS",
+                                                detail = detailText,
+                                                courseId = item.code
+                                            )
+                                        }
+                                        runCatching {
+                                            db.addReminder(
+                                                title = "Kelas ${item.title}",
+                                                detail = "${daysId[item.day]}, $rangeLabel" + if (item.room.isNotBlank()) " • ${item.room}" else "",
+                                                time = normalizedTime.substringBefore('–'),
+                                                category = "Kelas",
+                                                enabled = true,
+                                                sourceId = "course:${item.code}"
+                                            )
                                         }
                                     }
                                 }
@@ -574,54 +616,95 @@ fun OnboardingScreen(onFinished: () -> Unit) {
     if (showAddCourseDialog) {
         var addCode by remember { mutableStateOf("") }
         var addTitle by remember { mutableStateOf("") }
-        var addSks by remember { mutableStateOf("3") }
+        var addSks by remember { mutableStateOf("") }
         var addDay by remember { mutableIntStateOf(0) }
-        var addTime by remember { mutableStateOf("08.00") }
-        var addRoom by remember { mutableStateOf("D.101") }
+        var addStartTime by remember { mutableStateOf("") }
+        var addEndTime by remember { mutableStateOf("") }
+        var addRoom by remember { mutableStateOf("") }
         var addLecturer by remember { mutableStateOf("") }
         var addError by remember { mutableStateOf(false) }
 
+        val semInt = semesterText.toIntOrNull() ?: 5
         AlertDialog(
             onDismissRequest = { showAddCourseDialog = false },
-            title = { Text(lString("Tambah Mata Kuliah", "Add Course")) },
+            title = { Text(lString("Tambah Mata Kuliah & Jadwal", "Add Course & Schedule")) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(addCode, { addCode = it }, label = { Text(lString("Kode (misal: IF520)", "Code (e.g. IF520)")) }, singleLine = true)
-                    OutlinedTextField(addTitle, { addTitle = it }, label = { Text(lString("Nama Mata Kuliah", "Course Name")) }, singleLine = true)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(addSks, { addSks = it }, label = { Text(lString("SKS", "Credits")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f), singleLine = true)
-                        OutlinedTextField(addTime, { addTime = it }, label = { Text(lString("Jam (HH.mm)", "Time (HH:mm)")) }, modifier = Modifier.weight(1f), singleLine = true)
-                    }
-                    OutlinedTextField(addRoom, { addRoom = it }, label = { Text(lString("Ruangan", "Room")) }, singleLine = true)
-                    OutlinedTextField(addLecturer, { addLecturer = it }, label = { Text(lString("Nama Dosen", "Lecturer Name")) }, singleLine = true)
+                    CurriculumCourseDropdown(
+                        currentSemester = semInt,
+                        selectedTitle = addTitle,
+                        onCourseSelected = { c ->
+                            if (c != null) {
+                                addCode = c.code
+                                addTitle = c.title
+                                addSks = c.sks.toString()
+                                addError = false
+                            } else {
+                                addCode = ""
+                                addTitle = ""
+                                addSks = ""
+                            }
+                        }
+                    )
+                    OutlinedTextField(addCode, { addCode = it; addError = false }, label = { Text(lString("Kode Mata Kuliah", "Course Code")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(addTitle, { addTitle = it; addError = false }, label = { Text(lString("Nama Mata Kuliah", "Course Name")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(
+                        addSks,
+                        { addSks = it.filter { ch -> ch.isDigit() }; addError = false },
+                        label = { Text(lString("Jumlah SKS (1-24)", "Credits / SKS (1-24)")) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Text(lString("Jam Perkuliahan (Mulai - Selesai):", "Class Hours (Start - End):"), style = MaterialTheme.typography.labelMedium)
+                    org.umn.application.studenthub.ui.components.TimeRangePickerRow(
+                        startTime = addStartTime,
+                        endTime = addEndTime,
+                        onStartTimeChange = { addStartTime = it; addError = false },
+                        onEndTimeChange = { addEndTime = it; addError = false },
+                        isError = addError && addStartTime.isBlank()
+                    )
+                    OutlinedTextField(addRoom, { addRoom = it }, label = { Text(lString("Ruangan (opsional)", "Room (optional)")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(addLecturer, { addLecturer = it }, label = { Text(lString("Nama Dosen (opsional)", "Lecturer Name (optional)")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     Text(lString("Hari Kuliah:", "Class Day:"), style = MaterialTheme.typography.labelMedium)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         listOf(
                             lString("Sen", "Mon"),
                             lString("Sel", "Tue"),
                             lString("Rab", "Wed"),
                             lString("Kam", "Thu"),
-                            lString("Jum", "Fri")
+                            lString("Jum", "Fri"),
+                            lString("Sab", "Sat"),
+                            lString("Min", "Sun")
                         ).forEachIndexed { i, d ->
                             FilterChip(selected = addDay == i, onClick = { addDay = i }, label = { Text(d) })
                         }
                     }
-                    if (addError) Text(lString("Isi kode, nama, dan SKS dengan benar.", "Please fill in code, name, and credits correctly."), color = MaterialTheme.colorScheme.error)
+                    if (addError) {
+                        Text(
+                            lString("Pastikan kode, nama, SKS (1-24), serta jam mulai & selesai kuliah diisi dengan benar.", "Please fill in code, name, credits (1-24), and start & end time correctly."),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     val sksNum = addSks.toIntOrNull()
-                    if (addCode.isNotBlank() && addTitle.isNotBlank() && sksNum != null && sksNum in 1..6) {
-                        defaultCourses.add(
+                    val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(addStartTime, addEndTime)
+                    val normalizedTime = StudentHubDatabase.normalizeTimeFormat(combinedTime)
+                    val timeValid = Regex("(?:[01][0-9]|2[0-3])\\.[0-5][0-9](?:–(?:[01][0-9]|2[0-3])\\.[0-5][0-9])?").matches(normalizedTime)
+                    if (addCode.isNotBlank() && addTitle.isNotBlank() && sksNum != null && sksNum in 1..24 && timeValid) {
+                        courses.add(
                             OnboardingCourseItem(
                                 code = addCode.trim().uppercase(),
                                 title = addTitle.trim(),
                                 sks = sksNum,
                                 day = addDay,
-                                time = addTime.trim(),
-                                room = addRoom.trim().ifBlank { "Ruang Kuliah" },
-                                lecturer = addLecturer.trim().ifBlank { "Dosen Pengampu" }
+                                time = normalizedTime,
+                                room = addRoom.trim(),
+                                lecturer = addLecturer.trim()
                             )
                         )
                         showAddCourseDialog = false

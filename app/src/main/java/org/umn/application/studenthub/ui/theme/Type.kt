@@ -18,7 +18,6 @@ val Roboto = FontFamily(
     Font(R.font.roboto_medium, FontWeight.Medium)
 )
 
-// Set of Material typography styles to start with
 val Typography = Typography(
     titleLarge = TextStyle(
         fontFamily = Roboto,

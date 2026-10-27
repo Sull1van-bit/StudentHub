@@ -28,9 +28,6 @@ object LanguagePreferences {
     }
 }
 
-/**
- * Returns [id] when current language is Indonesian, and [en] when English.
- */
 @Composable
 fun lString(id: String, en: String): String {
     return if (LocalAppLanguage.current == AppLanguage.ENGLISH) en else id

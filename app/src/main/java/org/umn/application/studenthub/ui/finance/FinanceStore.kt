@@ -33,9 +33,10 @@ class FinanceStore(private val read: () -> String?, private val write: (String) 
     }
 
     fun add(title: String, amount: String, category: String, income: Boolean, date: String) {
+        val cleanAmount = amount.replace(".", "").replace(",", "").trim()
         require(title.isNotBlank() && title.length <= 200) { "Nama transaksi wajib diisi (maks. 200 karakter)." }
-        require(amount.matches(Regex("[0-9]+"))) { "Masukkan nominal rupiah bulat tanpa titik atau koma." }
-        val rupiah = amount.toLongOrNull()
+        require(cleanAmount.matches(Regex("[0-9]+"))) { "Masukkan nominal rupiah bulat." }
+        val rupiah = cleanAmount.toLongOrNull()
         require(rupiah != null && rupiah in 1..1_000_000_000_000L) { "Nominal harus 1–1.000.000.000.000 rupiah." }
         require(category in listOf("Makan", "Transportasi", "Kuliah", "Kos", "Lainnya")) { "Kategori tidak valid." }
         require(runCatching { java.time.LocalDate.parse(date) }.isSuccess) { "Tanggal tidak valid." }

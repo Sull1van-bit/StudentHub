@@ -12,6 +12,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,93 +26,99 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import org.umn.application.studenthub.data.local.StudentHubDatabase
 import org.umn.application.studenthub.ui.localization.AppLanguage
 import org.umn.application.studenthub.ui.localization.LocalAppLanguage
 import org.umn.application.studenthub.ui.localization.lString
-
-internal val noteCourses = linkedMapOf(
-    "IF570" to "Mobile Application Programming",
-    "EM105" to "Technopreneurship",
-    "UM321" to "English 3",
-    "IF590" to "Information Technology Research",
-    "IF542" to "Deep Learning",
-    "IF571" to "Cybersecurity",
-    "IF581" to "Game Development"
-)
-
-internal fun getCourseName(code: String): String {
-    return noteCourses[code] ?: code
-}
-
-// Only the editor's supplied content is seeded for Robolectric unit tests; real users start empty.
-internal val demoNoteBody = """Memahami alur layar
-
-Activity adalah satu layar interaksi. Saat pengguna berpindah layar, Android mengelola Activity melalui lifecycle dan back stack.
-
-1. Lifecycle utama
-• onCreate: siapkan layout dan data awal.
-• onStart: layar mulai terlihat.
-• onResume: layar siap menerima input.
-• onPause: simpan perubahan sementara.
-
-2. Navigasi dengan Intent
-Gunakan explicit Intent untuk membuka Activity lain. Kirim data seperlunya melalui extras, bukan seluruh objek besar.
-
-val intent = Intent(this,
-    DetailActivity::class.java)
-startActivity(intent)
-
-Untuk praktikum hari ini
-Uji tombol kembali: layar sebelumnya harus tetap menyimpan input pengguna."""
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 internal fun notesStore(context: Context): NotesStore {
-    val preferences = context.getSharedPreferences("studenthub_notes", Context.MODE_PRIVATE)
-    val store = NotesStore(
-        { preferences.getString("notes", null) },
-        { check(preferences.edit().putString("notes", it).commit()) { "Penyimpanan gagal. Coba lagi." } }
-    )
-    val isRobolectric = android.os.Build.FINGERPRINT.contains("robolectric", ignoreCase = true)
-    if (isRobolectric && !preferences.contains("notes")) {
-        store.save("demo-lifecycle", "Navigasi & Activity lifecycle", "IF570", demoNoteBody)
-    }
-    return store
+    return NotesStore(StudentHubDatabase.get(context))
 }
 
 @Composable
-fun NotesScreen(onScanNote: () -> Unit = {}, onEditNote: (String) -> Unit) {
+fun NotesScreen(
+    onScanNote: () -> Unit = {},
+    onEditNote: (String) -> Unit
+) {
+    NotesScreen(
+        initialCourseFilter = "",
+        onScanNote = { onScanNote() },
+        onEditNoteWithCourse = { noteId, _ -> onEditNote(noteId) }
+    )
+}
+
+@Composable
+fun NotesScreen(
+    initialCourseFilter: String = "",
+    onScanNote: (String) -> Unit = {},
+    onEditNoteWithCourse: (noteId: String, courseId: String) -> Unit
+) {
     val context = LocalContext.current
     val loaded = remember { runCatching { notesStore(context) } }
     val store = loaded.getOrNull()
+    val database = remember(context) { StudentHubDatabase.get(context) }
+    val dbCoursesList = remember {
+        runCatching { database.courses() }.getOrDefault(emptyList())
+    }
+    val dbCourses = remember(dbCoursesList) {
+        dbCoursesList.associate { it.code to it.title }
+    }
     var query by rememberSaveable { mutableStateOf("") }
-    var course by rememberSaveable { mutableStateOf("Semua") }
+    var course by rememberSaveable(initialCourseFilter) {
+        mutableStateOf(initialCourseFilter.takeIf { it.isNotBlank() } ?: "Semua")
+    }
+    var studioNote by remember { mutableStateOf<StudentNote?>(null) }
+    var studioInitialTab by rememberSaveable { mutableIntStateOf(0) }
+    var studioInitialSessionId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showChatHistory by rememberSaveable { mutableStateOf(false) }
+
+    fun displayCourseTitle(code: String): String = dbCourses[code]?.let { "$code • $it" } ?: code
+
+    val selectedCourseForNewNote = if (course != "Semua") course else (dbCoursesList.firstOrNull()?.code ?: "")
+
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(if (org.umn.application.studenthub.ui.localization.LocalAppLanguage.current == org.umn.application.studenthub.ui.localization.AppLanguage.ENGLISH) "Class Notes" else "Ide rapi, belajar ringan.", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
-            Text(
-                if (org.umn.application.studenthub.ui.localization.LocalAppLanguage.current == org.umn.application.studenthub.ui.localization.AppLanguage.ENGLISH)
-                    "${store?.notes?.size ?: 0} notes saved • ${store?.notes?.map { it.course }?.distinct()?.size ?: 0} courses"
-                else
-                    "${store?.notes?.size ?: 0} catatan tersimpan • ${store?.notes?.map { it.course }?.distinct()?.size ?: 0} mata kuliah",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    if (LocalAppLanguage.current == AppLanguage.ENGLISH) "Class Notes" else "Catatan Kuliah",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    if (LocalAppLanguage.current == AppLanguage.ENGLISH)
+                        "${store?.notes?.size ?: 0} notes saved • ${dbCoursesList.size} registered courses"
+                    else
+                        "${store?.notes?.size ?: 0} catatan tersimpan • ${dbCoursesList.size} mata kuliah terdaftar",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            FilledTonalButton(
+                onClick = { showChatHistory = true }
+            ) {
+                Icon(Icons.Default.Forum, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(lString("Riwayat Diskusi", "Chat History"))
+            }
         }
 
-        // Prominent Document Scanner card directly in Notes module
         Card(
-            onClick = onScanNote,
+            onClick = { onScanNote(selectedCourseForNewNote) },
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth().testTag("scan-note-card")
@@ -124,16 +131,20 @@ fun NotesScreen(onScanNote: () -> Unit = {}, onEditNote: (String) -> Unit) {
                 Icon(Icons.Default.DocumentScanner, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(28.dp))
                 Column(Modifier.weight(1f)) {
                     Text(lString("Pindai Dokumen / Catatan", "Scan Document / Notes"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(lString("Scan lembar catatan fisik via kamera", "Scan physical notes or documents with camera"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(lString("Scan lembar catatan fisik & tautkan ke mata kuliah", "Scan physical notes & link to your course"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(lString("Pindai", "Scan"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
         }
 
         TextField(
-            value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth().testTag("note-search"),
-            placeholder = { Text(lString("Cari judul atau isi catatan", "Search note title or content")) }, leadingIcon = { Icon(Icons.Default.Search, null) },
-            singleLine = true, shape = CircleShape,
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().testTag("note-search"),
+            placeholder = { Text(lString("Cari judul, mata kuliah, atau isi catatan", "Search note title, course, or content")) },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            singleLine = true,
+            shape = CircleShape,
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -141,35 +152,59 @@ fun NotesScreen(onScanNote: () -> Unit = {}, onEditNote: (String) -> Unit) {
                 unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
             )
         )
-        val isEn = LocalAppLanguage.current == AppLanguage.ENGLISH
-        val availableCourses = remember(store?.notes) {
+        val availableCourses = remember(store?.notes, dbCourses) {
             val userCourses = store?.notes?.map { it.course }?.distinct().orEmpty()
-            (noteCourses.keys + userCourses).distinct()
+            (dbCourses.keys + userCourses).distinct()
         }
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            (listOf("Semua") + availableCourses).forEach { label ->
-                val displayLabel = if (label == "Semua") lString("Semua", "All") else getCourseName(label)
-                FilterChip(
-                    selected = course == label,
-                    onClick = { course = label },
-                    label = { Text(displayLabel) },
-                    leadingIcon = if (course == label) { { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) } } else null
-                )
+        if (availableCourses.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                (listOf("Semua") + availableCourses).forEach { label ->
+                    val displayLabel = if (label == "Semua") lString("Semua", "All") else displayCourseTitle(label)
+                    FilterChip(
+                        selected = course == label,
+                        onClick = { course = label },
+                        label = { Text(displayLabel) },
+                        leadingIcon = if (course == label) {
+                            { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
+                        } else null
+                    )
+                }
             }
         }
         val filtered = store?.search(query, course).orEmpty()
         filtered.groupBy { it.course }.forEach { (code, notes) ->
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(getCourseName(code), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Icon(Icons.Default.School, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    Text(displayCourseTitle(code), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text("${notes.size} " + lString("catatan", "notes"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                 }
                 notes.forEach { note ->
                     ListItem(
                         headlineContent = { Text(note.title) },
-                        supportingContent = { Text(if (note.id == "demo-lifecycle") "Pertemuan 6 • 5 Oktober 2026" else "Diperbarui ${SimpleDateFormat("d MMM yyyy", Locale.forLanguageTag("id-ID")).format(Date(note.updatedAt))}") },
+                        supportingContent = {
+                            Text(
+                                displayCourseTitle(note.course) + " • " +
+                                    lString("Diperbarui ", "Updated ") +
+                                    SimpleDateFormat("d MMM yyyy", Locale.forLanguageTag("id-ID")).format(Date(note.updatedAt))
+                            )
+                        },
                         leadingContent = { Icon(Icons.Default.Edit, null) },
-                        modifier = Modifier.fillMaxWidth().clickable { onEditNote(note.id) },
+                        trailingContent = {
+                            FilledTonalIconButton(
+                                onClick = {
+                                    studioInitialTab = 0
+                                    studioInitialSessionId = null
+                                    studioNote = note
+                                }
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.MenuBook,
+                                    contentDescription = lString("Buka Studio Belajar", "Open Study Studio")
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().clickable { onEditNoteWithCourse(note.id, note.course) },
                         colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface)
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
@@ -185,13 +220,14 @@ fun NotesScreen(onScanNote: () -> Unit = {}, onEditNote: (String) -> Unit) {
                 Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.NoteAlt, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
                     Text(
-                        if (query.isBlank()) lString("Belum ada catatan. Buat catatan pertamamu.", "No notes yet. Create your first note.") else lString("Tidak ada catatan yang cocok.", "No matching notes found."),
+                        if (query.isBlank()) lString("Belum ada catatan. Buat catatan pertamamu.", "No notes yet. Create your first note.")
+                        else lString("Tidak ada catatan yang cocok.", "No matching notes found."),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
                     if (query.isBlank()) {
                         Text(
-                            lString("Mulai tulis ide atau scan catatan fisikmu.", "Start writing notes or scan physical handouts."),
+                            lString("Pilih mata kuliah dan mulai tulis catatan kuliahmu.", "Select a course and start writing your class notes."),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -199,97 +235,315 @@ fun NotesScreen(onScanNote: () -> Unit = {}, onEditNote: (String) -> Unit) {
                 }
             }
         }
-        loaded.exceptionOrNull()?.let { Text(lString("Catatan tidak dapat dibaca. Data lama tidak diubah.", "Notes cannot be read. Existing data kept."), color = MaterialTheme.colorScheme.error) }
+        loaded.exceptionOrNull()?.let { Text(lString("Catatan tidak dapat dibaca.", "Notes cannot be read."), color = MaterialTheme.colorScheme.error) }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onEditNote("") }, enabled = store != null, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Default.Edit, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(lString("Buat catatan", "New note"))
+            Button(
+                onClick = { onEditNoteWithCourse("", selectedCourseForNewNote) },
+                enabled = store != null,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Edit, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(lString("Buat catatan", "New note"))
             }
-            OutlinedButton(onClick = onScanNote, modifier = Modifier.weight(1f).testTag("scan-note-btn")) {
-                Icon(Icons.Default.DocumentScanner, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(lString("Pindai Catatan", "Scan note"))
+            OutlinedButton(
+                onClick = { onScanNote(selectedCourseForNewNote) },
+                modifier = Modifier.weight(1f).testTag("scan-note-btn")
+            ) {
+                Icon(Icons.Default.DocumentScanner, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(lString("Pindai Catatan", "Scan note"))
             }
         }
-        Text(lString("Tersimpan secara lokal di perangkat ini • Pindai catatan fisik langsung dengan kamera.", "Saved locally on this device • Scan physical notes directly with camera."), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+
+    studioNote?.let { activeNote ->
+        NotebookLmStudioSheet(
+            noteId = activeNote.id,
+            noteTitle = activeNote.title,
+            noteCourse = activeNote.course,
+            noteBody = activeNote.body,
+            initialTab = studioInitialTab,
+            initialSessionId = studioInitialSessionId,
+            onInsertToNote = { snippet ->
+                runCatching {
+                    val updatedBody = (activeNote.body.trimEnd() + snippet).trimStart()
+                    store?.save(activeNote.id, activeNote.title, activeNote.course, updatedBody)
+                    studioNote = store?.notes?.firstOrNull { it.id == activeNote.id }
+                }
+            },
+            onDismiss = {
+                studioNote = null
+                studioInitialSessionId = null
+            }
+        )
+    }
+
+    if (showChatHistory) {
+        AiChatHistorySheet(
+            database = database,
+            onOpenSession = { session ->
+                showChatHistory = false
+                val matched = store?.notes?.firstOrNull { it.id == session.noteId }
+                if (matched != null) {
+                    studioInitialTab = 3
+                    studioInitialSessionId = session.id
+                    studioNote = matched
+                } else {
+                    studioInitialTab = 3
+                    studioInitialSessionId = session.id
+                    studioNote = StudentNote(
+                        id = session.noteId,
+                        title = session.title,
+                        course = session.courseId.ifBlank { "Umum" },
+                        body = "",
+                        updatedAt = session.updatedAt
+                    )
+                }
+            },
+            onDismiss = { showChatHistory = false }
+        )
     }
 }
 
 @Composable
-fun NoteEditorScreen(noteId: String, defaultCourse: String = "IF570", onSaved: () -> Unit) {
+fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> Unit) {
     val context = LocalContext.current
     val loaded = remember(noteId) { runCatching { notesStore(context) } }
     val store = loaded.getOrNull()
+    val dbCourses = remember {
+        runCatching { StudentHubDatabase.get(context).courses() }.getOrDefault(emptyList())
+    }
     val original = store?.notes?.firstOrNull { it.id == noteId }
     var title by rememberSaveable(noteId) { mutableStateOf(original?.title.orEmpty()) }
     var body by rememberSaveable(noteId) { mutableStateOf(original?.body.orEmpty()) }
-    var course by rememberSaveable(noteId) { mutableStateOf(original?.course ?: if (defaultCourse.isNotBlank()) defaultCourse else "IF570") }
+    var course by rememberSaveable(noteId) {
+        mutableStateOf(
+            original?.course
+                ?: defaultCourse.takeIf { it.isNotBlank() }
+                ?: dbCourses.firstOrNull()?.code
+                ?: "Umum"
+        )
+    }
     var error by rememberSaveable(noteId) { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf(false) }
+    var showStudio by rememberSaveable { mutableStateOf(false) }
+    var studioTab by rememberSaveable { mutableIntStateOf(0) }
     val missing = noteId.isNotEmpty() && original == null
+
     Column(
-        Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
-        val courseName = getCourseName(course)
+        val matchedCourse = dbCourses.firstOrNull { it.code.equals(course, ignoreCase = true) }
+        val courseLabel = matchedCourse?.let { "${it.code} • ${it.title}" } ?: course
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(courseName, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            Text(if (noteId == "demo-lifecycle") "Pertemuan 6 • 5 Oktober 2026" else lString("Catatan lokal", "Local note"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(courseLabel.ifBlank { lString("Catatan Kuliah", "Class Note") }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(
+                if (matchedCourse != null) {
+                    lString("Terhubung ke mata kuliah ${matchedCourse.title}", "Linked to course ${matchedCourse.title}")
+                } else {
+                    lString("Pilih mata kuliah yang terdaftar di bawah ini", "Select a registered course below")
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
-        if (noteId.isEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            noteCourses.keys.forEach { code ->
-                FilterChip(
-                    selected = course == code,
-                    onClick = { course = code },
-                    label = { Text(getCourseName(code)) }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                lString("Mata Kuliah Terkait", "Linked Course"),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (dbCourses.isNotEmpty()) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    dbCourses.forEach { c ->
+                        FilterChip(
+                            selected = course.equals(c.code, ignoreCase = true),
+                            onClick = { course = c.code },
+                            label = { Text("${c.code} • ${c.title}") },
+                            leadingIcon = if (course.equals(c.code, ignoreCase = true)) {
+                                { Icon(Icons.Default.Check, null, Modifier.size(16.dp)) }
+                            } else null
+                        )
+                    }
+                    FilterChip(
+                        selected = course.equals("Umum", ignoreCase = true),
+                        onClick = { course = "Umum" },
+                        label = { Text(lString("Umum", "General")) }
+                    )
+                }
+            } else {
+                Text(
+                    lString(
+                        "Belum ada mata kuliah terdaftar. Catatan akan disimpan dengan kategori Umum (tambahkan mata kuliah di menu Akademik).",
+                        "No courses registered yet. Note will be saved under General (add courses in Academics)."
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
-        OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth().testTag("note-title"), label = { Text(lString("Judul catatan", "Note title")) }, singleLine = true, isError = error != null && title.isBlank())
-        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(8.dp)), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+
+        OutlinedTextField(
+            value = title,
+            onValueChange = { title = it },
+            modifier = Modifier.fillMaxWidth().testTag("note-title"),
+            label = { Text(lString("Judul catatan", "Note title")) },
+            singleLine = true,
+            isError = error != null && title.isBlank()
+        )
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            lString("Studio Belajar", "Study Studio"),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            lString(
+                                "Ringkasan, kanvas konsep, kartu latihan, dan diskusi dari isi catatanmu.",
+                                "Summary, concept canvas, flashcards, and Q&A from your note."
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AssistChip(
+                        onClick = { studioTab = 0; showStudio = true },
+                        label = { Text(lString("Rangkuman", "Summary")) },
+                        leadingIcon = { Icon(Icons.Default.Summarize, null, Modifier.size(16.dp)) }
+                    )
+                    AssistChip(
+                        onClick = { studioTab = 1; showStudio = true },
+                        label = { Text(lString("Kanvas", "Canvas")) },
+                        leadingIcon = { Icon(Icons.Default.AccountTree, null, Modifier.size(16.dp)) }
+                    )
+                    AssistChip(
+                        onClick = { studioTab = 2; showStudio = true },
+                        label = { Text(lString("Kuis & Panduan", "Quiz & Guide")) },
+                        leadingIcon = { Icon(Icons.Default.Quiz, null, Modifier.size(16.dp)) }
+                    )
+                    AssistChip(
+                        onClick = { studioTab = 3; showStudio = true },
+                        label = { Text(lString("Tanya Catatan", "Ask Note")) },
+                        leadingIcon = { Icon(Icons.Default.Forum, null, Modifier.size(16.dp)) }
+                    )
+                    AssistChip(
+                        onClick = { studioTab = 4; showStudio = true },
+                        label = { Text(lString("Perkembangan", "Progress")) },
+                        leadingIcon = { Icon(Icons.Default.Assessment, null, Modifier.size(16.dp)) }
+                    )
+                }
+            }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(8.dp)),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             IconButton(onClick = { body += " **teks tebal**" }) { Icon(Icons.Default.FormatBold, lString("Tambahkan teks tebal", "Add bold text")) }
             IconButton(onClick = { body += " _teks miring_" }) { Icon(Icons.Default.FormatItalic, lString("Tambahkan teks miring", "Add italic text")) }
             IconButton(onClick = { body += "\n• " }) { Icon(Icons.AutoMirrored.Filled.FormatListBulleted, lString("Tambahkan daftar", "Add bullet list")) }
+            Spacer(Modifier.weight(1f))
+            TextButton(
+                onClick = { studioTab = 0; showStudio = true },
+                modifier = Modifier.padding(end = 4.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Filled.MenuBook, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(lString("Buka Studio", "Open Studio"))
+            }
         }
         BasicTextField(
-            value = body, onValueChange = { body = it },
+            value = body,
+            onValueChange = { body = it },
             modifier = Modifier.fillMaxWidth().heightIn(min = 240.dp).testTag("note-body").semantics { contentDescription = "Isi catatan" },
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
             visualTransformation = { text ->
                 val annotated = AnnotatedString.Builder(text)
                 val headingEnd = text.text.indexOf('\n').let { if (it < 0) text.length else it }
-                if (headingEnd > 0) annotated.addStyle(SpanStyle(fontSize = 28.sp, fontWeight = FontWeight.Medium), 0, headingEnd)
-                listOf("1. Lifecycle utama", "2. Navigasi dengan Intent", "Untuk praktikum hari ini").forEach { section ->
-                    val start = text.text.indexOf(section)
-                    if (start >= 0) annotated.addStyle(SpanStyle(fontWeight = FontWeight.Medium), start, start + section.length)
-                }
-                val start = text.text.indexOf("val intent")
-                val end = text.text.indexOf("startActivity(intent)")
-                if (start >= 0 && end >= start) annotated.addStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp), start, end + "startActivity(intent)".length)
+                if (headingEnd > 0) annotated.addStyle(SpanStyle(fontSize = 22.sp, fontWeight = FontWeight.Medium), 0, headingEnd)
                 TransformedText(annotated.toAnnotatedString(), OffsetMapping.Identity)
             },
-            decorationBox = { field -> Box { if (body.isEmpty()) Text(lString("Tulis isi catatan…", "Write note content…"), color = MaterialTheme.colorScheme.onSurfaceVariant); field() } }
+            decorationBox = { field ->
+                Box {
+                    if (body.isEmpty()) Text(lString("Tulis isi catatan…", "Write note content…"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    field()
+                }
+            }
         )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .6f))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(if (title == original?.title && body == original.body) Icons.Default.Check else Icons.Default.Edit, null, Modifier.size(20.dp))
-            Text(if (title == original?.title && body == original.body) lString("Perubahan terakhir tersimpan", "All changes saved") else lString("Belum tersimpan • ketuk Selesai mengedit", "Unsaved changes • tap Done editing"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (title == original?.title && body == original.body) lString("Perubahan terakhir tersimpan", "All changes saved")
+                else lString("Belum tersimpan • ketuk Selesai mengedit", "Unsaved changes • tap Done editing"),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
-        if (missing || store == null) Text(lString("Catatan tidak dapat dibaca. Data lama tidak diubah.", "Note could not be read."), color = MaterialTheme.colorScheme.error)
+        if (missing || store == null) Text(lString("Catatan tidak ditemukan.", "Note not found."), color = MaterialTheme.colorScheme.error)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(onClick = {
-            runCatching { requireNotNull(store).save(noteId, title, course, body) }
-                .onSuccess { onSaved() }.onFailure { error = it.message ?: "Gagal menyimpan catatan." }
+            runCatching { requireNotNull(store).save(noteId, title, course.ifBlank { dbCourses.firstOrNull()?.code ?: "Umum" }, body) }
+                .onSuccess { onSaved() }
+                .onFailure { error = it.message ?: "Gagal menyimpan catatan." }
         }, enabled = store != null && !missing) { Text(lString("Selesai mengedit", "Done editing")) }
         if (original != null) TextButton(onClick = { deleting = true }) { Text(lString("Hapus catatan", "Delete note"), color = MaterialTheme.colorScheme.error) }
     }
+
+    if (showStudio) {
+        NotebookLmStudioSheet(
+            noteId = noteId,
+            noteTitle = title,
+            noteCourse = course,
+            noteBody = body,
+            initialTab = studioTab,
+            onInsertToNote = { snippet ->
+                body = (body.trimEnd() + snippet).trimStart()
+            },
+            onDismiss = { showStudio = false }
+        )
+    }
+
     if (deleting) {
         val deleteFailedMsg = lString("Gagal menghapus catatan.", "Failed to delete note.")
         AlertDialog(
             onDismissRequest = { deleting = false },
             title = { Text(lString("Hapus catatan?", "Delete note?")) },
-            text = { Text(lString("Catatan ini akan dihapus dari perangkat.", "This note will be deleted from your device.")) },
-            confirmButton = { TextButton(onClick = {
-                runCatching { requireNotNull(store).delete(noteId) }.onSuccess { deleting = false; onSaved() }.onFailure { error = deleteFailedMsg; deleting = false }
-            }) { Text(lString("Hapus", "Delete")) } },
+            text = { Text(lString("Catatan ini akan dihapus dan tidak dapat dikembalikan.", "This note will be deleted and cannot be recovered.")) },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching { requireNotNull(store).delete(noteId) }
+                        .onSuccess { deleting = false; onSaved() }
+                        .onFailure { error = deleteFailedMsg; deleting = false }
+                }) { Text(lString("Hapus", "Delete")) }
+            },
             dismissButton = { TextButton(onClick = { deleting = false }) { Text(lString("Batal", "Cancel")) } }
         )
     }

@@ -4,6 +4,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -20,65 +21,38 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import org.umn.application.studenthub.data.local.StudentHubDatabase
 import org.umn.application.studenthub.ui.localization.lString
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScanNoteScreen(
-    initialCourseId: String = "IF570",
+    initialCourseId: String = "",
     onNavigateBack: () -> Unit,
     onSaveToNote: (title: String, course: String, content: String) -> Unit
 ) {
+    val context = LocalContext.current
+    val dbCourses = remember {
+        runCatching { StudentHubDatabase.get(context).courses() }.getOrDefault(emptyList())
+    }
     var isCaptured by rememberSaveable { mutableStateOf(false) }
     var flashOn by rememberSaveable { mutableStateOf(false) }
     var isFrontCamera by rememberSaveable { mutableStateOf(false) }
     var selectedFilter by rememberSaveable { mutableStateOf("B&W Dokumen") }
-    var selectedCourse by rememberSaveable { mutableStateOf(if (initialCourseId.isNotBlank()) initialCourseId else "IF570") }
-    val defaultTitle = lString("Catatan Fisik • Pertemuan Kuliah", "Physical Notes • Lecture")
-    var customTitle by rememberSaveable { mutableStateOf(defaultTitle) }
-
-    // Mock OCR text variants
-    val extractedText = remember(selectedCourse) {
-        when (selectedCourse) {
-            "IF570" -> """Ringkasan Kuliah IF570: Pemrograman Mobile
-Tanggal: 14 Oktober 2026
-Topik: Navigasi dan State Management Jetpack Compose
-
-Poin Penting:
-1. NavHost & NavController adalah inti navigasi deklaratif Compose.
-2. Argument passing menggunakan navArgument(key) { type = NavType.StringType }.
-3. State hoisting: pisahkan event dan state untuk komponen reusable.
-4. ViewModel mempertahankan state saat konfigurasi layar berubah.
-
-Catatan praktikum: Pastikan back stack dibersihkan saat kembali ke halaman utama."""
-
-            "IF550" -> """Ringkasan Kuliah IF550: Rekayasa Perangkat Lunak
-Topik: Pola Arsitektur MVC vs MVVM
-
-1. Model: Menyimpan data & logika bisnis murni.
-2. View: Hanya bertugas merender UI dan mendengarkan perubahan data.
-3. ViewModel: Bertindak sebagai penghubung dan state-holder.
-Tenggat tugas diagram arsitektur: Rabu, 7 Okt."""
-
-            "IF510" -> """Ringkasan Kuliah IF510: Basis Data Lanjut
-Topik: Indeks B-Tree & Optimasi Query
-
-- B-Tree index mempercepat query pencarian range dan equality.
-- Hindari indeks berlebihan pada kolom yang sering mengalami UPDATE/INSERT.
-- Evaluasi query execution plan dengan EXPLAIN ANALYZE."""
-
-            else -> """Catatan Perkuliahan Mahasiswa
-Mata Kuliah: $selectedCourse
-Hasil pindaian dokumen fisik:
-• Seluruh catatan tertata rapi dan siap dipelajari kembali.
-• Disimpan ke dalam catatan lokal StudentHub."""
-        }
+    var selectedCourse by rememberSaveable {
+        mutableStateOf(
+            initialCourseId.takeIf { it.isNotBlank() }
+                ?: dbCourses.firstOrNull()?.code
+                ?: ""
+        )
     }
+    var customTitle by rememberSaveable { mutableStateOf("") }
+    var scannedBody by rememberSaveable { mutableStateOf("") }
+    var error by rememberSaveable { mutableStateOf(false) }
 
     val infiniteTransition = rememberInfiniteTransition(label = "scan-line")
     val scanOffset by infiniteTransition.animateFloat(
@@ -106,7 +80,7 @@ Hasil pindaian dokumen fisik:
                             Icon(
                                 if (flashOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
                                 "Flash",
-                                tint = if (flashOn) Color(0xFFF1C40F) else LocalContentColor.current
+                                tint = if (flashOn) MaterialTheme.colorScheme.primary else LocalContentColor.current
                             )
                         }
                         IconButton(onClick = { isFrontCamera = !isFrontCamera }) {
@@ -121,7 +95,6 @@ Hasil pindaian dokumen fisik:
         }
     ) { innerPadding ->
         if (!isCaptured) {
-            // CAMERA VIEWFINDER VIEW
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -130,7 +103,6 @@ Hasil pindaian dokumen fisik:
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Top Helper Banner
                 Surface(
                     color = Color.Black.copy(alpha = 0.6f),
                     shape = RoundedCornerShape(20.dp),
@@ -150,7 +122,6 @@ Hasil pindaian dokumen fisik:
                     }
                 }
 
-                // Viewfinder Frame with Reticles
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(0.85f)
@@ -160,7 +131,6 @@ Hasil pindaian dokumen fisik:
                         .border(2.dp, Color(0xFF4ADE80).copy(alpha = 0.8f), RoundedCornerShape(16.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    // Simulated Notebook Paper Texture
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -177,7 +147,6 @@ Hasil pindaian dokumen fisik:
                         }
                     }
 
-                    // Scanning line animation
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -197,9 +166,8 @@ Hasil pindaian dokumen fisik:
                             )
                     )
 
-                    // Target Corner Indicators
                     Text(
-                        text = lString("Dokumen terdeteksi (A4 / Buku)", "Document detected (A4 / Notebook)"),
+                        text = lString("Dokumen siap dipindai", "Document ready to scan"),
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF4ADE80),
                         modifier = Modifier
@@ -210,7 +178,6 @@ Hasil pindaian dokumen fisik:
                     )
                 }
 
-                // Bottom Controls: Shutter & Gallery
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -218,7 +185,6 @@ Hasil pindaian dokumen fisik:
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Gallery mockup
                     IconButton(
                         onClick = { isCaptured = true },
                         modifier = Modifier
@@ -228,7 +194,6 @@ Hasil pindaian dokumen fisik:
                         Icon(Icons.Default.PhotoLibrary, lString("Galeri", "Gallery"), tint = Color.White)
                     }
 
-                    // Main Shutter Button
                     Box(
                         modifier = Modifier
                             .size(76.dp)
@@ -240,7 +205,6 @@ Hasil pindaian dokumen fisik:
                             .testTag("scan-shutter-btn")
                     )
 
-                    // Flash feedback
                     IconButton(
                         onClick = { flashOn = !flashOn },
                         modifier = Modifier
@@ -256,7 +220,6 @@ Hasil pindaian dokumen fisik:
                 }
             }
         } else {
-            // CAPTURED PREVIEW & OCR EXTRACTION VIEW
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -265,7 +228,6 @@ Hasil pindaian dokumen fisik:
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // Success Badge
                 Surface(
                     color = MaterialTheme.colorScheme.primaryContainer,
                     shape = RoundedCornerShape(12.dp)
@@ -280,13 +242,13 @@ Hasil pindaian dokumen fisik:
                         Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
                         Column {
                             Text(
-                                lString("Pindaian Berhasil", "Scan Successful"),
+                                lString("Pindaian Siap Disimpan", "Scan Ready to Save"),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Text(
-                                lString("Teks catatan fisik berhasil diekstraksi secara otomatis (OCR)", "Physical note text extracted automatically (OCR)"),
+                                lString("Isi judul, mata kuliah, dan teks hasil pindaian sebelum menyimpan.", "Fill in the title, course, and scanned text before saving."),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
@@ -294,7 +256,6 @@ Hasil pindaian dokumen fisik:
                     }
                 }
 
-                // Filter Enhancements
                 Text(lString("Pilih Tampilan Dokumen:", "Select Document Appearance:"), style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(
@@ -310,73 +271,62 @@ Hasil pindaian dokumen fisik:
                     }
                 }
 
-                // Target Mata Kuliah
-                Text(lString("Pilih Mata Kuliah untuk Catatan Ini:", "Select Course for This Note:"), style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("IF570", "IF550", "IF510", "IF530").forEach { cId ->
-                        FilterChip(
-                            selected = selectedCourse == cId,
-                            onClick = { selectedCourse = cId },
-                            label = { Text(cId) }
-                        )
+                OutlinedTextField(
+                    value = selectedCourse,
+                    onValueChange = { selectedCourse = it; error = false },
+                    label = { Text(lString("Kode Mata Kuliah / Kategori", "Course Code / Category")) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                if (dbCourses.isNotEmpty()) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        dbCourses.forEach { c ->
+                            FilterChip(
+                                selected = selectedCourse == c.code,
+                                onClick = { selectedCourse = c.code; error = false },
+                                label = { Text("${c.code} • ${c.title}") }
+                            )
+                        }
                     }
                 }
 
-                // Judul Catatan
                 OutlinedTextField(
                     value = customTitle,
-                    onValueChange = { customTitle = it },
+                    onValueChange = { customTitle = it; error = false },
                     label = { Text(lString("Judul Catatan", "Note Title")) },
+                    isError = error && customTitle.isBlank(),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
 
-                // OCR Text Result Preview Box
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                lString("Teks Hasil OCR", "OCR Extracted Text"),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                lString("Ekstraksi Otomatis", "Automatic Extraction"),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        HorizontalDivider()
-                        Text(
-                            text = extractedText,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp,
-                            lineHeight = 20.sp
-                        )
-                    }
+                OutlinedTextField(
+                    value = scannedBody,
+                    onValueChange = { scannedBody = it },
+                    label = { Text(lString("Isi Catatan Hasil Pindaian", "Scanned Note Content")) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp),
+                    minLines = 5
+                )
+
+                if (error) {
+                    Text(
+                        lString("Judul catatan wajib diisi.", "Note title is required."),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
 
-                // Action Buttons
-                val fallbackScannedTitle = lString("Catatan Pindaian • $selectedCourse", "Scanned Note • $selectedCourse")
                 Button(
                     onClick = {
-                        onSaveToNote(
-                            customTitle.ifBlank { fallbackScannedTitle },
-                            selectedCourse,
-                            extractedText
-                        )
+                        if (customTitle.isBlank()) {
+                            error = true
+                        } else {
+                            val courseToSave = selectedCourse.trim().ifBlank { "Umum" }
+                            onSaveToNote(
+                                customTitle.trim(),
+                                courseToSave,
+                                scannedBody
+                            )
+                        }
                     },
                     modifier = Modifier
                         .fillMaxWidth()

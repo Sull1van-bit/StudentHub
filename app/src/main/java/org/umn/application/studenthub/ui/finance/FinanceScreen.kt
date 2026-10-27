@@ -1,7 +1,6 @@
 package org.umn.application.studenthub.ui.finance
 
 import android.content.Context
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -11,6 +10,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Notifications
@@ -21,60 +22,92 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import org.umn.application.studenthub.R
 import java.text.NumberFormat
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
+import org.umn.application.studenthub.data.local.ReminderItemRow
+import org.umn.application.studenthub.data.local.StudentHubDatabase
+import org.umn.application.studenthub.ui.localization.lString
 
 private val financeLocale = Locale.forLanguageTag("id-ID")
 private fun rupiah(value: Long) = "Rp" + NumberFormat.getIntegerInstance(financeLocale).format(value)
-private val defaultBudgets = linkedMapOf("Makan" to 600000L, "Transportasi" to 200000L, "Kuliah" to 250000L, "Kos" to 800000L, "Lainnya" to 150000L)
-private val demoSpent = mapOf("Makan" to 320000L, "Transportasi" to 100000L, "Kuliah" to 150000L, "Kos" to 0L, "Lainnya" to 80000L)
+private val budgetCategories = listOf("Makan", "Transportasi", "Kuliah", "Kos", "Lainnya")
 
 internal fun financeStore(context: Context): FinanceStore {
-    return FinanceStore(org.umn.application.studenthub.data.local.StudentHubDatabase.get(context))
+    return FinanceStore(StudentHubDatabase.get(context))
 }
 
 @Composable
 fun FinanceScreen() {
     val context = LocalContext.current
+    val database = remember(context) { runCatching { StudentHubDatabase.get(context) }.getOrNull() }
     val initialStore = remember { runCatching { financeStore(context) }.getOrNull() }
     val initialBudgets = remember { runCatching { initialStore?.budgets() ?: emptyMap() }.getOrDefault(emptyMap()) }
     var store by remember { mutableStateOf<FinanceStore?>(initialStore) }
     var budgets by remember { mutableStateOf<Map<String, Long>>(initialBudgets) }
+    var financeReminders by remember {
+        mutableStateOf(
+            runCatching { database?.reminders()?.filter { it.category == "Keuangan" }.orEmpty() }.getOrDefault(emptyList())
+        )
+    }
     var loading by remember { mutableStateOf(initialStore == null) }
     var failed by remember { mutableStateOf(false) }
     var attempt by remember { mutableIntStateOf(0) }
-    LaunchedEffect(attempt) {
+    var version by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(attempt, version) {
         if (store == null) {
             loading = true
-            withContext(Dispatchers.IO) { runCatching { financeStore(context).let { it to it.budgets() } } }
-                .onSuccess { (loaded, values) -> store = loaded; budgets = values; failed = false }
-                .onFailure { failed = true }
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val s = financeStore(context)
+                    val b = s.budgets()
+                    val r = StudentHubDatabase.get(context).reminders().filter { it.category == "Keuangan" }
+                    Triple(s, b, r)
+                }
+            }.onSuccess { (loaded, values, rems) ->
+                store = loaded
+                budgets = values
+                financeReminders = rems
+                failed = false
+            }.onFailure {
+                failed = true
+            }
             loading = false
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    StudentHubDatabase.get(context).reminders().filter { it.category == "Keuangan" }
+                }
+            }.onSuccess { rems ->
+                financeReminders = rems
+            }
         }
     }
-    var version by remember { mutableIntStateOf(0) }
-    var month by rememberSaveable { mutableStateOf("2026-10") }
+
+    var month by rememberSaveable { mutableStateOf(YearMonth.now().toString()) }
     var monthsOpen by remember { mutableStateOf(false) }
     var adding by rememberSaveable { mutableStateOf(false) }
     var budgetOpen by rememberSaveable { mutableStateOf(false) }
+    var addingReminder by rememberSaveable { mutableStateOf(false) }
     var allTransactions by rememberSaveable { mutableStateOf(false) }
     var filterType by rememberSaveable { mutableStateOf("Semua") }
     var selectedCategoryFilter by rememberSaveable { mutableStateOf("Semua") }
     var inspectingTransaction by remember { mutableStateOf<StudentTransaction?>(null) }
     val scope = rememberCoroutineScope()
 
-    val rawTransactions = remember(version, month, store) { store?.transactions.orEmpty().filter { it.date.startsWith(month) }.sortedByDescending { it.date } }
+    val rawTransactions = remember(version, month, store) {
+        store?.transactions.orEmpty().filter { it.date.startsWith(month) }.sortedByDescending { it.date }
+    }
     val transactions = remember(rawTransactions, filterType, selectedCategoryFilter) {
         rawTransactions.filter { tx ->
             val matchesType = when (filterType) {
@@ -93,9 +126,13 @@ fun FinanceScreen() {
     }
     if (loading || failed) {
         Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (loading) { CircularProgressIndicator(); Text("Memuat keuangan…") }
-            else { Text("Keuangan tidak dapat dibaca. Data lama tidak diubah.", color = MaterialTheme.colorScheme.error)
-                TextButton(onClick = { attempt++ }) { Text("Coba lagi") } }
+            if (loading) {
+                CircularProgressIndicator()
+                Text(lString("Memuat data keuangan…", "Loading financial data…"))
+            } else {
+                Text(lString("Gagal memuat data keuangan.", "Failed to load financial data."), color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = { attempt++ }) { Text(lString("Coba lagi", "Retry")) }
+            }
         }
         return
     }
@@ -104,8 +141,8 @@ fun FinanceScreen() {
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(org.umn.application.studenthub.ui.localization.lString("Keuangan Mahasiswa", "Student Finances"), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text(org.umn.application.studenthub.ui.localization.lString("Kelola uang saku, anggaran, dan pengeluaran harianmu.", "Manage your allowance, budgets, and daily expenses."), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(lString("Keuangan Mahasiswa", "Student Finances"), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text(lString("Kelola uang saku, anggaran, dan pengeluaran harianmu.", "Manage your allowance, budgets, and daily expenses."), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Box {
             Row(Modifier.fillMaxWidth().clickable { monthsOpen = true }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -114,28 +151,49 @@ fun FinanceScreen() {
             }
             DropdownMenu(monthsOpen, { monthsOpen = false }) {
                 val selected = YearMonth.parse(month)
-                listOf(selected.minusMonths(1), selected, selected.plusMonths(1), YearMonth.now()).distinct().forEach { option ->
-                    DropdownMenuItem(text = { Text(option.format(DateTimeFormatter.ofPattern("MMMM yyyy", financeLocale))) }, onClick = { month = option.toString(); monthsOpen = false })
+                val txMonths = store?.transactions.orEmpty().mapNotNull {
+                    runCatching { YearMonth.parse(it.date.substring(0, 7)) }.getOrNull()
                 }
+                (listOf(selected.minusMonths(1), selected, selected.plusMonths(1), YearMonth.now()) + txMonths)
+                    .distinct()
+                    .sortedDescending()
+                    .forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.format(DateTimeFormatter.ofPattern("MMMM yyyy", financeLocale))) },
+                            onClick = { month = option.toString(); monthsOpen = false }
+                        )
+                    }
             }
         }
         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), shape = RoundedCornerShape(12.dp)) {
             Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(org.umn.application.studenthub.ui.localization.lString("Saldo transaksi lokal", "Local Transaction Balance"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(lString("Total Saldo", "Current Balance"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(rupiah(summary.balance), style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("finance-balance"))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Column(Modifier.weight(1f)) { Text(org.umn.application.studenthub.ui.localization.lString("Pemasukan", "Income"), style = MaterialTheme.typography.bodySmall); Text(rupiah(summary.income), style = MaterialTheme.typography.titleMedium) }
-                    Column(Modifier.weight(1f)) { Text(org.umn.application.studenthub.ui.localization.lString("Pengeluaran", "Expense"), style = MaterialTheme.typography.bodySmall); Text(rupiah(summary.expense), style = MaterialTheme.typography.titleMedium) }
+                    Column(Modifier.weight(1f)) {
+                        Text(lString("Pemasukan", "Income"), style = MaterialTheme.typography.bodySmall)
+                        Text(rupiah(summary.income), style = MaterialTheme.typography.titleMedium)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(lString("Pengeluaran", "Expense"), style = MaterialTheme.typography.bodySmall)
+                        Text(rupiah(summary.expense), style = MaterialTheme.typography.titleMedium)
+                    }
                 }
-                Text(org.umn.application.studenthub.ui.localization.lString("Tersimpan secara lokal di SQLite; data transaksi diperbarui otomatis.", "Stored locally in SQLite; transaction data updates automatically."), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(org.umn.application.studenthub.ui.localization.lString("Anggaran bulanan", "Monthly budget"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = { budgetOpen = true }) { Text(org.umn.application.studenthub.ui.localization.lString("Atur", "Set")) }
+                Text(lString("Anggaran bulanan", "Monthly budget"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = { budgetOpen = true }) { Text(lString("Atur", "Set")) }
             }
-            Text(org.umn.application.studenthub.ui.localization.lString("${rupiah(spent.values.sum())} terpakai dari ${rupiah(budgets.values.sum())}", "${rupiah(spent.values.sum())} used of ${rupiah(budgets.values.sum())}"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                lString(
+                    "${rupiah(spent.values.sum())} terpakai dari ${rupiah(budgets.values.sum())}",
+                    "${rupiah(spent.values.sum())} used of ${rupiah(budgets.values.sum())}"
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 budgets.forEach { (category, budget) ->
                     val amount = spent.getValue(category)
@@ -144,33 +202,102 @@ fun FinanceScreen() {
                             Text(category, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
                             Text("${rupiah(amount)} / ${rupiah(budget)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        LinearProgressIndicator(progress = { if (budget > 0) (amount.toFloat() / budget).coerceIn(0f, 1f) else 0f }, modifier = Modifier.fillMaxWidth().height(4.dp), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.surfaceContainerHighest, drawStopIndicator = {})
+                        LinearProgressIndicator(
+                            progress = { if (budget > 0) (amount.toFloat() / budget).coerceIn(0f, 1f) else 0f },
+                            modifier = Modifier.fillMaxWidth().height(4.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            drawStopIndicator = {}
+                        )
                     }
                 }
             }
         }
-        if (month == "2026-10") Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(8.dp)).padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(Icons.Default.Notifications, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-            Text(org.umn.application.studenthub.ui.localization.lString("Pengingat: Kos Rp800.000 • Bayar sebelum 10 Okt", "Reminder: Rent Rp800,000 • Pay before Oct 10"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(org.umn.application.studenthub.ui.localization.lString("Transaksi terbaru", "Recent transactions"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                TextButton(onClick = { allTransactions = !allTransactions }) {
-                    Text(if (allTransactions) org.umn.application.studenthub.ui.localization.lString("Ringkas", "Collapse") else org.umn.application.studenthub.ui.localization.lString("Semua (${transactions.size})", "All (${transactions.size})"))
+                Text(lString("Pengingat Keuangan", "Finance Reminders"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = { addingReminder = true }, modifier = Modifier.testTag("add-finance-reminder-btn")) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(lString("Tambah Pengingat", "Add Reminder"))
                 }
             }
-            // Filter chips
+            if (financeReminders.isEmpty()) {
+                Text(
+                    lString("Belum ada pengingat keuangan (mis. bayar kos / UKT).", "No finance reminders yet (e.g. rent / tuition)."),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                financeReminders.forEach { reminder ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Notifications,
+                            null,
+                            Modifier.size(20.dp),
+                            tint = if (reminder.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(reminder.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            val sub = listOfNotNull(
+                                reminder.time.takeIf { it.isNotBlank() },
+                                reminder.detail.takeIf { it.isNotBlank() }
+                            ).joinToString(" • ")
+                            if (sub.isNotBlank()) {
+                                Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Switch(
+                            checked = reminder.enabled,
+                            onCheckedChange = { enabled ->
+                                scope.launch {
+                                    StudentHubDatabase.get(context).toggleReminder(reminder.id, enabled)
+                                    financeReminders = StudentHubDatabase.get(context).reminders().filter { it.category == "Keuangan" }
+                                    version++
+                                }
+                            }
+                        )
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    StudentHubDatabase.get(context).deleteReminder(reminder.id)
+                                    financeReminders = StudentHubDatabase.get(context).reminders().filter { it.category == "Keuangan" }
+                                    version++
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = lString("Hapus pengingat", "Delete reminder"), tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(lString("Transaksi terbaru", "Recent transactions"), Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = { allTransactions = !allTransactions }) {
+                    Text(if (allTransactions) lString("Ringkas", "Collapse") else lString("Semua (${transactions.size})", "All (${transactions.size})"))
+                }
+            }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(
-                    "Semua" to org.umn.application.studenthub.ui.localization.lString("Semua", "All"),
-                    "Pengeluaran" to org.umn.application.studenthub.ui.localization.lString("Pengeluaran", "Expense"),
-                    "Pemasukan" to org.umn.application.studenthub.ui.localization.lString("Pemasukan", "Income")
+                    "Semua" to lString("Semua", "All"),
+                    "Pengeluaran" to lString("Pengeluaran", "Expense"),
+                    "Pemasukan" to lString("Pemasukan", "Income")
                 ).forEach { (typeKey, label) ->
                     FilterChip(selected = filterType == typeKey, onClick = { filterType = typeKey }, label = { Text(label) })
                 }
             }
-            if (transactions.isEmpty()) Text(org.umn.application.studenthub.ui.localization.lString("Belum ada transaksi pada filter ini.", "No transactions found for this filter."), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (transactions.isEmpty()) Text(lString("Belum ada transaksi pada filter ini.", "No transactions found for this filter."), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             (if (allTransactions) transactions else transactions.take(4)).forEach { transaction ->
                 ListItem(
                     headlineContent = { Text(transaction.title) },
@@ -190,35 +317,50 @@ fun FinanceScreen() {
         }
 
         Button(onClick = { adding = true }, enabled = store != null, modifier = Modifier.fillMaxWidth().testTag("add-transaction-btn")) {
-            Icon(Icons.Default.Edit, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(org.umn.application.studenthub.ui.localization.lString("Catat transaksi", "Record transaction"))
+            Icon(Icons.Default.Edit, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(lString("Catat transaksi", "Record transaction"))
         }
     }
     if (adding) TransactionDialog(month, onDismiss = { adding = false }) { title, amount, category, income, date ->
-        withContext(Dispatchers.IO) { requireNotNull(store).add(title, amount, category, income, date) }
+        requireNotNull(store).add(title, amount, category, income, date)
         version++; adding = false
     }
     if (budgetOpen) BudgetDialog(budgets, onDismiss = { budgetOpen = false }) { values ->
-        withContext(Dispatchers.IO) { requireNotNull(store).saveBudgets(values) }
-        budgets = withContext(Dispatchers.IO) { requireNotNull(store).budgets() }
+        requireNotNull(store).saveBudgets(values)
+        budgets = requireNotNull(store).budgets()
         version++; budgetOpen = false
     }
+    if (addingReminder) FinanceReminderDialog(
+        onDismiss = { addingReminder = false },
+        onSave = { title, time, detail ->
+            StudentHubDatabase.get(context).addReminder(
+                title = title.trim(),
+                detail = detail.trim(),
+                time = time.trim(),
+                category = "Keuangan",
+                enabled = true
+            )
+            financeReminders = StudentHubDatabase.get(context).reminders().filter { it.category == "Keuangan" }
+            version++
+            addingReminder = false
+        }
+    )
     inspectingTransaction?.let { tx ->
         AlertDialog(
             onDismissRequest = { inspectingTransaction = null },
             title = { Text(tx.title) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(org.umn.application.studenthub.ui.localization.lString("Kategori: ${tx.category}", "Category: ${tx.category}"))
+                    Text(lString("Kategori: ${tx.category}", "Category: ${tx.category}"))
                     Text(
-                        if (tx.income) org.umn.application.studenthub.ui.localization.lString("Tipe: Pemasukan (+)", "Type: Income (+)")
-                        else org.umn.application.studenthub.ui.localization.lString("Tipe: Pengeluaran (−)", "Type: Expense (−)")
+                        if (tx.income) lString("Tipe: Pemasukan (+)", "Type: Income (+)")
+                        else lString("Tipe: Pengeluaran (−)", "Type: Expense (−)")
                     )
-                    Text(org.umn.application.studenthub.ui.localization.lString("Nominal: ${rupiah(tx.amount)}", "Amount: ${rupiah(tx.amount)}"))
-                    Text(org.umn.application.studenthub.ui.localization.lString("Tanggal: ${tx.date}", "Date: ${tx.date}"))
+                    Text(lString("Nominal: ${rupiah(tx.amount)}", "Amount: ${rupiah(tx.amount)}"))
+                    Text(lString("Tanggal: ${tx.date}", "Date: ${tx.date}"))
                 }
             },
             confirmButton = {
-                TextButton(onClick = { inspectingTransaction = null }) { Text(org.umn.application.studenthub.ui.localization.lString("Tutup", "Close")) }
+                TextButton(onClick = { inspectingTransaction = null }) { Text(lString("Tutup", "Close")) }
             },
             dismissButton = {
                 TextButton(onClick = {
@@ -227,10 +369,71 @@ fun FinanceScreen() {
                         version++
                         inspectingTransaction = null
                     }
-                }) { Text(org.umn.application.studenthub.ui.localization.lString("Hapus", "Delete"), color = MaterialTheme.colorScheme.error) }
+                }) { Text(lString("Hapus", "Delete"), color = MaterialTheme.colorScheme.error) }
             }
         )
     }
+}
+
+@Composable
+private fun FinanceReminderDialog(
+    onDismiss: () -> Unit,
+    onSave: suspend (String, String, String) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var title by rememberSaveable { mutableStateOf("") }
+    var time by rememberSaveable { mutableStateOf("") }
+    var detail by rememberSaveable { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(lString("Tambah Pengingat Keuangan", "Add Finance Reminder")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text(lString("Judul pengingat", "Reminder title")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("finance-reminder-title")
+                )
+                org.umn.application.studenthub.ui.components.TimePickerField(
+                    value = time,
+                    onValueChange = { time = it },
+                    label = lString("Waktu (HH.mm)", "Time (HH.mm)"),
+                    placeholder = "09.00",
+                    testTag = "finance-reminder-time"
+                )
+                OutlinedTextField(
+                    value = detail,
+                    onValueChange = { detail = it },
+                    label = { Text(lString("Keterangan / Tanggal jatuh tempo", "Detail / Due date")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("finance-reminder-detail")
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving && title.isNotBlank(),
+                onClick = {
+                    saving = true
+                    scope.launch {
+                        onSave(title, time.ifBlank { "09.00" }, detail)
+                        saving = false
+                    }
+                }
+            ) {
+                Text(lString("Simpan", "Save"))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(lString("Batal", "Cancel"))
+            }
+        }
+    )
 }
 
 @Composable
@@ -249,92 +452,117 @@ private fun TransactionDialog(month: String, onDismiss: () -> Unit, onSave: susp
     val amountValid = amountNum != null && amountNum in 1..1_000_000_000_000L
     val dateValid = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}").matches(date) && runCatching { LocalDate.parse(date) }.isSuccess
 
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(org.umn.application.studenthub.ui.localization.lString("Catat transaksi", "Record transaction")) }, text = {
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(lString("Catat transaksi", "Record transaction")) }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
                 modifier = Modifier.fillMaxWidth().testTag("transaction-title"),
-                label = { Text(org.umn.application.studenthub.ui.localization.lString("Nama transaksi", "Transaction name")) },
+                label = { Text(lString("Nama transaksi", "Transaction name")) },
                 isError = title.isNotEmpty() && !titleValid,
                 supportingText = {
-                    if (title.isNotEmpty() && !titleValid) Text(org.umn.application.studenthub.ui.localization.lString("Nama transaksi wajib diisi (maks. 200 karakter)", "Transaction name is required (max 200 characters)"))
+                    if (title.isNotEmpty() && !titleValid) Text(lString("Nama transaksi wajib diisi (maks. 200 karakter)", "Transaction name is required (max 200 characters)"))
                 },
                 singleLine = true
             )
             OutlinedTextField(
                 value = amount,
-                onValueChange = { amount = it },
+                onValueChange = { amount = org.umn.application.studenthub.ui.components.cleanRupiahInput(it) },
                 modifier = Modifier.fillMaxWidth().testTag("transaction-amount"),
-                label = { Text(org.umn.application.studenthub.ui.localization.lString("Nominal rupiah", "Amount (IDR)")) },
+                label = { Text(lString("Nominal rupiah", "Amount (IDR)")) },
+                prefix = { Text("Rp ") },
+                visualTransformation = remember { org.umn.application.studenthub.ui.components.RupiahVisualTransformation() },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 isError = amount.isNotEmpty() && !amountValid,
-                supportingText = {
-                    if (amount.isNotEmpty() && !amountValid) Text(org.umn.application.studenthub.ui.localization.lString("Masukkan angka bulat positif tanpa titik atau koma", "Enter positive whole number without dots or commas"))
-                    else Text(org.umn.application.studenthub.ui.localization.lString("Angka bulat tanpa titik atau koma", "Whole numbers without dots or commas"))
-                },
+                supportingText = if (amount.isNotEmpty() && !amountValid) {
+                    { Text(lString("Masukkan nominal antara Rp 1 dan Rp 1.000.000.000.000", "Enter amount between Rp 1 and Rp 1,000,000,000,000")) }
+                } else null,
                 singleLine = true
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(!income, { income = false }, { Text(org.umn.application.studenthub.ui.localization.lString("Keluar", "Expense")) })
-                FilterChip(income, { income = true }, { Text(org.umn.application.studenthub.ui.localization.lString("Masuk", "Income")) })
+                FilterChip(!income, { income = false }, { Text(lString("Keluar", "Expense")) })
+                FilterChip(income, { income = true }, { Text(lString("Masuk", "Income")) })
             }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                defaultBudgets.keys.forEach { option ->
+                budgetCategories.forEach { option ->
                     val optLabel = when (option) {
-                        "Makan" -> org.umn.application.studenthub.ui.localization.lString("Makan", "Food")
-                        "Transportasi" -> org.umn.application.studenthub.ui.localization.lString("Transportasi", "Transport")
-                        "Kuliah" -> org.umn.application.studenthub.ui.localization.lString("Kuliah", "Tuition")
-                        "Kos" -> org.umn.application.studenthub.ui.localization.lString("Kos", "Rent")
-                        else -> org.umn.application.studenthub.ui.localization.lString("Lainnya", "Others")
+                        "Makan" -> lString("Makan", "Food")
+                        "Transportasi" -> lString("Transportasi", "Transport")
+                        "Kuliah" -> lString("Kuliah", "Tuition")
+                        "Kos" -> lString("Kos", "Rent")
+                        else -> lString("Lainnya", "Others")
                     }
                     FilterChip(category == option, { category = option }, { Text(optLabel) })
                 }
             }
-            OutlinedTextField(
+            org.umn.application.studenthub.ui.components.DatePickerField(
                 value = date,
                 onValueChange = { date = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text(org.umn.application.studenthub.ui.localization.lString("Tanggal (YYYY-MM-DD)", "Date (YYYY-MM-DD)")) },
+                label = lString("Tanggal (YYYY-MM-DD)", "Date (YYYY-MM-DD)"),
                 isError = date.isNotEmpty() && !dateValid,
                 supportingText = {
-                    if (date.isNotEmpty() && !dateValid) Text(org.umn.application.studenthub.ui.localization.lString("Format tanggal harus YYYY-MM-DD (contoh: 2026-10-05)", "Date format must be YYYY-MM-DD (e.g. 2026-10-05)"))
-                },
-                singleLine = true
+                    if (date.isNotEmpty() && !dateValid) Text(lString("Format tanggal harus YYYY-MM-DD (contoh: 2026-10-05)", "Date format must be YYYY-MM-DD (e.g. 2026-10-05)"))
+                }
             )
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
     }, confirmButton = { TextButton(enabled = !saving, onClick = {
         saving = true
         scope.launch { runCatching { onSave(title, amount, category, income, date) }.onFailure { error = it.message ?: "Transaksi gagal disimpan." }; saving = false }
-    }) { Text(org.umn.application.studenthub.ui.localization.lString("Simpan transaksi", "Save transaction")) } }, dismissButton = { TextButton(onClick = onDismiss) { Text(org.umn.application.studenthub.ui.localization.lString("Batal", "Cancel")) } })
+    }) { Text(lString("Simpan transaksi", "Save transaction")) } }, dismissButton = { TextButton(onClick = onDismiss) { Text(lString("Batal", "Cancel")) } })
 }
 
 @Composable
 private fun BudgetDialog(budgets: Map<String, Long>, onDismiss: () -> Unit, onSave: suspend (Map<String, Long>) -> Unit) {
     val scope = rememberCoroutineScope()
     var saving by remember { mutableStateOf(false) }
-    val values = remember { mutableStateMapOf<String, String>().apply { budgets.forEach { (key, value) -> put(key, value.toString()) } } }
+    val values = remember {
+        mutableStateMapOf<String, String>().apply {
+            budgetCategories.forEach { key ->
+                val current = budgets[key] ?: 0L
+                put(key, if (current > 0L) current.toString() else "")
+            }
+        }
+    }
     var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text(org.umn.application.studenthub.ui.localization.lString("Atur anggaran bulanan", "Set monthly budget")) }, text = {
+    val rupiahTransformation = remember { org.umn.application.studenthub.ui.components.RupiahVisualTransformation() }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(lString("Atur anggaran bulanan", "Set monthly budget")) }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            budgets.keys.forEach { key ->
+            budgetCategories.forEach { key ->
                 val keyLabel = when (key) {
-                    "Makan" -> org.umn.application.studenthub.ui.localization.lString("Makan", "Food")
-                    "Transportasi" -> org.umn.application.studenthub.ui.localization.lString("Transportasi", "Transport")
-                    "Kuliah" -> org.umn.application.studenthub.ui.localization.lString("Kuliah", "Tuition")
-                    "Kos" -> org.umn.application.studenthub.ui.localization.lString("Kos", "Rent")
-                    else -> org.umn.application.studenthub.ui.localization.lString("Lainnya", "Others")
+                    "Makan" -> lString("Makan", "Food")
+                    "Transportasi" -> lString("Transportasi", "Transport")
+                    "Kuliah" -> lString("Kuliah", "Tuition")
+                    "Kos" -> lString("Kos", "Rent")
+                    else -> lString("Lainnya", "Others")
                 }
-                OutlinedTextField(values[key].orEmpty(), { values[key] = it }, label = { Text(keyLabel) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
+                OutlinedTextField(
+                    value = values[key].orEmpty(),
+                    onValueChange = { values[key] = org.umn.application.studenthub.ui.components.cleanRupiahInput(it) },
+                    modifier = Modifier.fillMaxWidth().testTag("budget-$key"),
+                    label = { Text(keyLabel) },
+                    prefix = { Text("Rp ") },
+                    visualTransformation = rupiahTransformation,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true
+                )
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
     }, confirmButton = { TextButton(enabled = !saving, onClick = {
         saving = true
         scope.launch { runCatching {
-            val parsed = values.mapValues { (_, value) -> value.toLongOrNull().also { require(it != null && it in 1..1_000_000_000_000L) { "Anggaran harus berupa rupiah bulat positif." } }!! }
+            val parsed = buildMap<String, Long> {
+                values.forEach { (key, value) ->
+                    val trimmed = value.replace(".", "").replace(",", "").trim()
+                    if (trimmed.isNotEmpty() && trimmed != "0") {
+                        val amount = trimmed.toLongOrNull()
+                        require(amount != null && amount in 1..1_000_000_000_000L) { "Anggaran harus berupa rupiah bulat positif." }
+                        put(key, amount)
+                    }
+                }
+            }
             onSave(parsed)
         }.onFailure { error = it.message }; saving = false }
-    }) { Text(org.umn.application.studenthub.ui.localization.lString("Simpan anggaran", "Save budget")) } }, dismissButton = { TextButton(onClick = onDismiss) { Text(org.umn.application.studenthub.ui.localization.lString("Batal", "Cancel")) } })
+    }) { Text(lString("Simpan anggaran", "Save budget")) } }, dismissButton = { TextButton(onClick = onDismiss) { Text(lString("Batal", "Cancel")) } })
 }

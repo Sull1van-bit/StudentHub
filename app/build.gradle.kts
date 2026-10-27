@@ -1,6 +1,24 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+val localProps = Properties().apply {
+    val propFile = rootProject.file("local.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
+fun resolveBuildSecret(key: String, fallbackKey: String = "", default: String = ""): String {
+    val raw = localProps.getProperty(key)
+        ?: (if (fallbackKey.isNotEmpty()) localProps.getProperty(fallbackKey) else null)
+        ?: System.getenv(key)
+        ?: (if (fallbackKey.isNotEmpty()) System.getenv(fallbackKey) else null)
+        ?: default
+    return raw.trim().replace("\\", "\\\\").replace("\"", "\\\"")
 }
 
 android {
@@ -17,6 +35,10 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "AI_API_KEY", "\"${resolveBuildSecret("AI_API_KEY", "GEMINI_API_KEY", "")}\"")
+        buildConfigField("String", "AI_BASE_URL", "\"${resolveBuildSecret("AI_BASE_URL", "", "https://generativelanguage.googleapis.com/v1beta")}\"")
+        buildConfigField("String", "AI_MODEL", "\"${resolveBuildSecret("AI_MODEL", "", "gemini-2.5-flash")}\"")
     }
 
     buildTypes {
@@ -32,6 +54,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true

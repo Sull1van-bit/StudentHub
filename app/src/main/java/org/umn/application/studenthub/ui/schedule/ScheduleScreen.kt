@@ -1,45 +1,45 @@
 package org.umn.application.studenthub.ui.schedule
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.launch
-import org.umn.application.studenthub.data.local.AgendaRow
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.umn.application.studenthub.R
+import org.umn.application.studenthub.data.local.AgendaRow
+import org.umn.application.studenthub.data.local.CourseRow
+import org.umn.application.studenthub.data.local.ReminderItemRow
+import org.umn.application.studenthub.data.local.StudentHubDatabase
 import org.umn.application.studenthub.ui.dashboard.AgendaEntry
 import org.umn.application.studenthub.ui.dashboard.ReminderRow
 import org.umn.application.studenthub.ui.dashboard.SectionHeading
 import org.umn.application.studenthub.ui.dashboard.SupportingText
-import org.umn.application.studenthub.data.local.StudentHubDatabase
-import org.umn.application.studenthub.data.local.CourseRow
-import org.umn.application.studenthub.ui.dashboard.getCourseInfo
 import org.umn.application.studenthub.ui.dashboard.computeClassTimeRange
-
-import androidx.compose.foundation.border
-import androidx.compose.ui.unit.sp
-import org.umn.application.studenthub.ui.localization.lString
-import org.umn.application.studenthub.ui.localization.LocalAppLanguage
+import org.umn.application.studenthub.ui.dashboard.getCourseInfo
 import org.umn.application.studenthub.ui.localization.AppLanguage
+import org.umn.application.studenthub.ui.localization.LocalAppLanguage
+import org.umn.application.studenthub.ui.localization.lString
 import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -47,23 +47,92 @@ import java.time.LocalDate
 fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit) {
     val today = remember { LocalDate.now() }
     val todayDayIndex = (today.dayOfWeek.value - 1).coerceIn(0, 6)
-    var selectedDay by rememberSaveable { mutableIntStateOf(0) }
+    var selectedDay by rememberSaveable { mutableIntStateOf(todayDayIndex) }
     var daily by rememberSaveable { mutableStateOf(false) }
     var adding by rememberSaveable { mutableStateOf(false) }
     var title by rememberSaveable { mutableStateOf("") }
     var time by rememberSaveable { mutableStateOf("") }
+    var kind by rememberSaveable { mutableStateOf("AGENDA") }
+    var detail by rememberSaveable { mutableStateOf("") }
+    var endTime by rememberSaveable { mutableStateOf("") }
+    var enableReminder by rememberSaveable { mutableStateOf(true) }
+
     val context = LocalContext.current
     val database = remember(context) { StudentHubDatabase.get(context) }
     val scope = rememberCoroutineScope()
     var version by remember { mutableIntStateOf(0) }
-    var entries by remember { mutableStateOf<List<AgendaRow>>(emptyList()) }
-    var savedCourses by remember { mutableStateOf<List<CourseRow>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    var entries by remember { mutableStateOf(runCatching { (0..6).flatMap(database::agenda) }.getOrDefault(emptyList())) }
+    var savedCourses by remember { mutableStateOf(runCatching { database.courses() }.getOrDefault(emptyList())) }
+    var reminders by remember { mutableStateOf(runCatching { database.reminders() }.getOrDefault(emptyList())) }
+    var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var inspecting by remember { mutableStateOf<AgendaRow?>(null) }
 
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                version++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
     val isEn = LocalAppLanguage.current == AppLanguage.ENGLISH
+
+    LaunchedEffect(version) {
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val courses = database.courses()
+                val agendas = (0..6).flatMap(database::agenda).toMutableList()
+                courses.forEach { course ->
+                    val pair = org.umn.application.studenthub.ui.dashboard.extractCourseScheduleDayAndTime(course.schedule)
+                    if (pair != null) {
+                        val already = agendas.any {
+                            it.day == pair.first && (
+                                it.courseId.equals(course.code, true) ||
+                                it.title.equals(course.title, true) ||
+                                it.title.equals(course.code, true)
+                            )
+                        }
+                        if (!already) {
+                            val detail = buildList {
+                                add(course.code)
+                                if (course.room.isNotBlank()) add(course.room)
+                            }.joinToString(" • ")
+                            val synth = AgendaRow(
+                                id = "course-sched-${course.id}",
+                                day = pair.first,
+                                time = pair.second,
+                                title = course.title,
+                                kind = "KELAS",
+                                detail = detail,
+                                courseId = course.code
+                            )
+                            agendas.add(synth)
+                            runCatching {
+                                database.addAgenda(synth.day, synth.time, synth.title, synth.kind, synth.detail, synth.courseId)
+                            }
+                        }
+                    }
+                }
+                val rems = database.reminders()
+                Triple(agendas, courses, rems)
+            }
+        }.onSuccess { (agendas, courses, rems) ->
+            entries = agendas
+            savedCourses = courses
+            reminders = rems
+            error = null
+        }.onFailure {
+            error = if (isEn) "Schedule could not be loaded." else "Gagal memuat jadwal agenda."
+        }
+        loading = false
+    }
+
     val monday = remember(today) { today.minusDays(todayDayIndex.toLong()) }
     val weekDates = remember(monday) { (0..6).map { monday.plusDays(it.toLong()) } }
 
@@ -82,24 +151,6 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
         else -> if (en) "December" else "Desember"
     }
 
-    LaunchedEffect(version) {
-        loading = true
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val agendas = (0..6).flatMap(database::agenda)
-                val courses = database.courses()
-                Pair(agendas, courses)
-            }
-        }.onSuccess { (agendas, courses) ->
-            entries = agendas
-            savedCourses = courses
-            error = null
-        }.onFailure {
-            error = if (isEn) "Agenda could not be loaded." else "Agenda tidak dapat dibaca. Data lama tidak diubah."
-        }
-        loading = false
-    }
-
     val daysId = listOf("Sen", "Sel", "Rab", "Kam", "Jum", "Sab", "Min")
     val daysEn = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     val fullDaysId = listOf("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
@@ -111,9 +162,9 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
     val monDate = weekDates[0]
     val sunDate = weekDates[6]
     val weekRangeSubtitle = if (isEn) {
-        "${getFullMonthName(monDate.monthValue, true)} ${monDate.dayOfMonth}–${sunDate.dayOfMonth}, ${sunDate.year} • Academic Week 6"
+        "${getFullMonthName(monDate.monthValue, true)} ${monDate.dayOfMonth}–${sunDate.dayOfMonth}, ${sunDate.year}"
     } else {
-        "${monDate.dayOfMonth}–${sunDate.dayOfMonth} ${getFullMonthName(sunDate.monthValue, false)} ${sunDate.year} • Minggu kuliah 6"
+        "${monDate.dayOfMonth}–${sunDate.dayOfMonth} ${getFullMonthName(sunDate.monthValue, false)} ${sunDate.year}"
     }
 
     Column(
@@ -121,7 +172,7 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
         verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(if (isEn) "Class Schedule" else "Minggu yang terarah.", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
+            Text(if (isEn) "Class Schedule" else "Jadwal Kuliah", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
             SupportingText(weekRangeSubtitle)
         }
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -158,7 +209,9 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
                         day,
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         "${date.dayOfMonth}",
@@ -166,20 +219,30 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
                         fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Medium,
                         color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                     )
-                    if (isToday) {
-                        Text(
-                            lString("Hari ini", "Today"),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 9.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    } else {
-                        Icon(
-                            painterResource(R.drawable.hub_day_dot),
-                            null,
-                            Modifier.size(4.dp),
-                            tint = if (entries.any { it.day == index }) MaterialTheme.colorScheme.primary else Color.Transparent
-                        )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isToday) {
+                            Text(
+                                lString("Hari ini", "Today"),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 9.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (entries.any { it.day == index }) {
+                            Icon(
+                                painterResource(R.drawable.hub_day_dot),
+                                null,
+                                Modifier.size(5.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        } else if (!isToday) {
+                            Spacer(Modifier.size(5.dp))
+                        }
                     }
                 }
             }
@@ -192,13 +255,7 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
 
             if (loading) CircularProgressIndicator()
             error?.let { Text(it, color = MaterialTheme.colorScheme.error); TextButton(onClick = { version++ }) { Text(lString("Coba lagi", "Retry")) } }
-            val rawDayEntries = entries.filter { it.day == selectedDay }.sortedBy { it.time }
-            val hasCustomEntries = rawDayEntries.any { !it.id.startsWith("demo-") && !it.id.startsWith("legacy-") }
-            val dayEntries = if (hasCustomEntries) {
-                rawDayEntries.filter { !it.id.startsWith("demo-") && !it.id.startsWith("legacy-") && !it.title.contains("Rekayasa Perangkat Lunak", ignoreCase = true) }
-            } else {
-                rawDayEntries
-            }
+            val dayEntries = entries.filter { it.day == selectedDay }.sortedBy { it.time }
             val dayClasses = dayEntries.filter { isClassEntry(it, savedCourses) }
 
             if (!loading && error == null) {
@@ -217,8 +274,60 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
                     val summaryText = if (parts.isNotEmpty()) parts.joinToString(" • ") else lString("${dayEntries.size} agenda terjadwal", "${dayEntries.size} scheduled items")
                     SupportingText(summaryText)
                 } else {
-                    SupportingText(lString("Belum ada agenda tersimpan untuk hari ini.", "No agenda scheduled for this day."))
+                    val otherDaysWithClasses = entries.filter { isClassEntry(it, savedCourses) }
+                    if (otherDaysWithClasses.isNotEmpty()) {
+                        SupportingText(lString("Belum ada jadwal kuliah untuk hari ini.", "No scheduled classes for this day."))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                lString("Jadwal kelas hari lain minggu ini:", "Classes on other days this week:"),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            otherDaysWithClasses.distinctBy { "${it.day}-${it.title}" }.sortedBy { it.day }.forEach { otherEntry ->
+                                Card(
+                                    onClick = { selectedDay = otherEntry.day },
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(
+                                                "${fullDays[otherEntry.day]} • ${computeClassTimeRange(otherEntry.time)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                otherEntry.title,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            if (otherEntry.detail.isNotBlank()) {
+                                                SupportingText(otherEntry.detail)
+                                            }
+                                        }
+                                        TextButton(onClick = { selectedDay = otherEntry.day }) {
+                                            Text(lString("Buka", "Open"))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        SupportingText(lString("Belum ada agenda tersimpan untuk hari ini.", "No agenda scheduled for this day."))
+                    }
                 }
+            }
+            val nowTime = java.time.LocalTime.now()
+            val nextClassToHighlight = if (selectedDay == todayDayIndex) {
+                dayClasses.firstOrNull { org.umn.application.studenthub.ui.dashboard.isAgendaStillActiveOrUpcoming(it.time, nowTime) }
+            } else {
+                dayClasses.firstOrNull()
             }
             dayEntries.forEach { entry ->
                 val isClass = isClassEntry(entry, savedCourses)
@@ -227,100 +336,205 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
 
                 when {
                     isClass -> {
-                        val (catCode, catRoom) = getCourseInfo(entry.title)
+                        val (catCode, catRoom) = getCourseInfo(entry.title, savedCourses)
                         val matchingDbCourse = savedCourses.firstOrNull {
-                            it.code.equals(entry.title, ignoreCase = true) ||
-                            it.title.equals(entry.title, ignoreCase = true) ||
-                            entry.title.contains(it.code, ignoreCase = true) ||
-                            entry.title.contains(it.title, ignoreCase = true)
+                            it.id == entry.courseId ||
+                                it.code.equals(entry.title, ignoreCase = true) ||
+                                it.title.equals(entry.title, ignoreCase = true) ||
+                                (it.code.isNotBlank() && entry.title.contains(it.code, ignoreCase = true)) ||
+                                (it.title.isNotBlank() && entry.title.contains(it.title, ignoreCase = true))
                         }
-                        val code = matchingDbCourse?.code ?: catCode.ifBlank { "IF570" }
-                        val room = if (catRoom.isNotBlank() && catRoom != "Ruang Kuliah") catRoom else "Ruang Kuliah"
+                        val code = entry.courseId.ifBlank { matchingDbCourse?.code ?: catCode }
+                        val room = entry.detail.ifBlank { matchingDbCourse?.room?.takeIf { it.isNotBlank() } ?: catRoom.ifBlank { "Ruang Kuliah" } }
                         val timeRange = computeClassTimeRange(entry.time)
-                        val detail = "$code • $room • $timeRange"
-                        val isFirstClassOfDay = (entry == dayClasses.firstOrNull())
-                        val kind = if (isFirstClassOfDay) lString("KELAS • PENGINGAT 15 MENIT", "CLASS • 15 MIN REMINDER") else lString("KELAS", "CLASS")
+                        val detailParts = listOfNotNull(
+                            code.takeIf { it.isNotBlank() },
+                            room.takeIf { it.isNotBlank() },
+                            timeRange
+                        )
+                        val isHighlightedNextClass = (entry == nextClassToHighlight)
+                        val isPassedToday = selectedDay == todayDayIndex &&
+                            !org.umn.application.studenthub.ui.dashboard.isAgendaStillActiveOrUpcoming(entry.time, nowTime)
+                        val kindLabel = when {
+                            isHighlightedNextClass -> lString("Kelas • Pengingat aktif", "Class • Reminder active")
+                            isPassedToday -> lString("Kelas • Selesai", "Class • Finished")
+                            else -> lString("Kelas", "Class")
+                        }
                         AgendaEntry(
                             time = entry.time,
-                            kind = kind,
+                            kind = kindLabel,
                             title = entry.title,
-                            detail = detail,
-                            highlighted = isFirstClassOfDay
-                        ) { onCourseClick(code) }
+                            detail = detailParts.joinToString(" • "),
+                            highlighted = isHighlightedNextClass
+                        ) {
+                            if (code.isNotBlank()) onCourseClick(code) else inspecting = entry
+                        }
                     }
                     isStudy -> {
                         AgendaEntry(
                             time = entry.time,
-                            kind = lString("BELAJAR", "STUDY"),
+                            kind = lString("Belajar", "Study"),
                             title = entry.title,
-                            detail = if (entry.id == "demo-study-if550") "Ulas pola MVC/MVVM" else lString("Target belajar mandiri • 30 menit", "Independent study session • 30 mins"),
+                            detail = entry.detail.ifBlank { lString("Sesi belajar mandiri", "Independent study session") },
                             onClick = onLearningClick
                         )
                     }
                     isDeadline -> {
-                        val (code, _) = getCourseInfo(entry.title)
+                        val (code, _) = getCourseInfo(entry.title, savedCourses)
+                        val resolvedCode = entry.courseId.ifBlank { code }
                         AgendaEntry(
                             time = entry.time,
-                            kind = lString("TENGGAT", "DEADLINE"),
+                            kind = lString("Tenggat", "Deadline"),
                             title = entry.title,
-                            detail = if (code.isNotBlank()) "$code • " + lString("Unggah laporan & kode", "Submit report & code") else lString("Batas akhir pengumpulan", "Submission deadline")
+                            detail = entry.detail.ifBlank {
+                                if (resolvedCode.isNotBlank()) "$resolvedCode • " + lString("Batas pengumpulan", "Submission deadline")
+                                else lString("Batas akhir pengumpulan", "Submission deadline")
+                            }
                         ) {
-                            if (code.isNotBlank()) onCourseClick(code) else { inspecting = entry }
+                            if (resolvedCode.isNotBlank()) onCourseClick(resolvedCode) else inspecting = entry
                         }
                     }
-                    entry.id.startsWith("demo-lab") || entry.title.contains("lab", ignoreCase = true) -> {
-                        val (code, _) = getCourseInfo(entry.title)
-                        AgendaEntry(entry.time, lString("PRAKTIKUM", "LAB"), entry.title, if (code.isNotBlank()) "$code • Lab" else entry.title) {
-                            if (code.isNotBlank()) onCourseClick(code) else { inspecting = entry }
-                        }
-                    }
-                    entry.id.startsWith("demo-quiz") || entry.title.contains("kuis", ignoreCase = true) -> {
-                        val (code, _) = getCourseInfo(entry.title)
-                        AgendaEntry(entry.time, lString("KUIS", "QUIZ"), entry.title, if (code.isNotBlank()) "$code • Evaluasi kuis" else entry.title) {
-                            if (code.isNotBlank()) onCourseClick(code) else { inspecting = entry }
-                        }
-                    }
-                    entry.id.startsWith("demo-project") || entry.title.contains("proyek", ignoreCase = true) -> {
-                        val (code, _) = getCourseInfo(entry.title)
-                        AgendaEntry(entry.time, lString("ASISTENSI", "ASSISTANCE"), entry.title, if (code.isNotBlank()) "$code • Proyek semester" else entry.title) {
-                            if (code.isNotBlank()) onCourseClick(code) else { inspecting = entry }
-                        }
-                    }
-                    entry.id == "demo-kos-payment" || entry.title.contains("bayar", ignoreCase = true) -> {
-                        AgendaEntry(entry.time, lString("KEUANGAN", "FINANCE"), entry.title, entry.title) { inspecting = entry }
+                    entry.kind.equals("KEUANGAN", ignoreCase = true) || entry.title.contains("bayar", ignoreCase = true) -> {
+                        AgendaEntry(entry.time, lString("Keuangan", "Finance"), entry.title, entry.detail.ifBlank { entry.title }) { inspecting = entry }
                     }
                     else -> {
-                        AgendaEntry(entry.time, lString("AGENDA", "AGENDA"), entry.title, lString("Agenda pribadi", "Personal agenda")) { inspecting = entry }
+                        AgendaEntry(entry.time, lString("Agenda", "Agenda"), entry.title, entry.detail.ifBlank { lString("Agenda pribadi", "Personal agenda") }) { inspecting = entry }
                     }
                 }
             }
         }
-        ReminderRow(R.drawable.hub_bell, lString("Pengingat kelas aktif 15 menit sebelumnya.", "Class reminders active 15 minutes before."))
+        val activeReminderCount = reminders.count { it.enabled }
+        val reminderStatusText = if (activeReminderCount > 0) {
+            lString("$activeReminderCount pengingat aktif.", "$activeReminderCount active reminders.")
+        } else {
+            lString("Belum ada pengingat aktif.", "No active reminders.")
+        }
+        ReminderRow(R.drawable.hub_bell, reminderStatusText)
         Button(onClick = { adding = true }, enabled = !loading && error == null, modifier = Modifier.fillMaxWidth().testTag("add-agenda-btn")) {
             Text(lString("Tambah agenda", "Add agenda"))
         }
     }
     if (adding) AlertDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
-        modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth().padding(16.dp),
+        modifier = Modifier.widthIn(max = 380.dp).fillMaxWidth().padding(16.dp),
         onDismissRequest = { adding = false },
         title = { Text(lString("Tambah agenda", "Add agenda")) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(title, { title = it }, label = { Text(lString("Judul agenda", "Agenda title")) }, singleLine = true)
-                OutlinedTextField(time, { time = it }, label = { Text(lString("Waktu (HH.mm)", "Time (HH.mm)")) }, singleLine = true,
-                    supportingText = { Text(lString("Contoh: 18.30", "Example: 18.30")) })
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "AGENDA" to lString("Agenda", "Agenda"),
+                        "KELAS" to lString("Kelas", "Class"),
+                        "TUGAS" to lString("Tenggat", "Deadline"),
+                        "BELAJAR" to lString("Belajar", "Study"),
+                        "KEUANGAN" to lString("Keuangan", "Finance")
+                    ).forEach { (k, label) ->
+                        FilterChip(selected = kind == k, onClick = { kind = k }, label = { Text(label) })
+                    }
+                }
+                if (kind == "KELAS") {
+                    val currentSem = remember { runCatching { database.profile().semester }.getOrDefault(5) }
+                    org.umn.application.studenthub.ui.components.CurriculumCourseDropdown(
+                        currentSemester = currentSem,
+                        selectedTitle = title,
+                        onCourseSelected = { c ->
+                            if (c != null) {
+                                title = "${c.code} ${c.title}"
+                            }
+                        }
+                    )
+                }
+                OutlinedTextField(title, { title = it }, label = { Text(if (kind == "KELAS") lString("Nama / Kode Mata Kuliah", "Course Name / Code") else lString("Judul agenda", "Agenda title")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Text(lString("Waktu Agenda / Kelas (Mulai - Selesai):", "Agenda / Class Time (Start - End):"), style = MaterialTheme.typography.labelMedium)
+                org.umn.application.studenthub.ui.components.TimeRangePickerRow(
+                    startTime = time,
+                    endTime = endTime,
+                    onStartTimeChange = { time = it },
+                    onEndTimeChange = { endTime = it }
+                )
+                OutlinedTextField(
+                    detail,
+                    { detail = it },
+                    label = { Text(lString("Ruangan / Keterangan (opsional)", "Room / Detail (optional)")) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(lString("Aktifkan pengingat notifikasi", "Enable notification reminder"), style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = enableReminder, onCheckedChange = { enableReminder = it })
+                }
             }
         },
         confirmButton = {
+            val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(time, endTime)
+            val normalizedTime = StudentHubDatabase.normalizeTimeFormat(combinedTime)
+            val timeValid = Regex("(?:[01][0-9]|2[0-3])\\.[0-5][0-9](?:–(?:[01][0-9]|2[0-3])\\.[0-5][0-9])?").matches(normalizedTime)
             TextButton(
-                enabled = !saving && title.isNotBlank() && title.length <= 200 && Regex("(?:[01][0-9]|2[0-3])\\.[0-5][0-9]").matches(time),
+                enabled = !saving && title.isNotBlank() && title.length <= 200 && timeValid,
                 onClick = {
                     saving = true
                     scope.launch {
-                        runCatching { database.addAgenda(selectedDay, time, title) }
-                            .onSuccess { version++; adding = false; title = ""; time = "" }
-                            .onFailure { error = if (isEn) "Failed to save agenda. Please retry." else "Agenda gagal disimpan. Coba lagi." }
+                        withContext(Dispatchers.IO) {
+                            runCatching {
+                                val rangeTime = computeClassTimeRange(normalizedTime)
+                                val courseCode = if (kind == "KELAS") {
+                                    val existingCourse = database.courses().firstOrNull {
+                                        it.code.equals(title.trim(), true) || it.title.equals(title.trim(), true)
+                                    }
+                                    val code = existingCourse?.code ?: title.trim().take(10).uppercase()
+                                    database.saveCourse(
+                                        CourseRow(
+                                            id = existingCourse?.id ?: code,
+                                            code = code,
+                                            title = title.trim(),
+                                            sks = existingCourse?.sks ?: 3,
+                                            semester = existingCourse?.semester ?: 1,
+                                            room = detail.trim().ifBlank { existingCourse?.room.orEmpty() },
+                                            schedule = "${fullDaysId[selectedDay]}, $rangeTime"
+                                        )
+                                    )
+                                    code
+                                } else ""
+
+                                val savedAgenda = database.addAgenda(selectedDay, rangeTime, title, kind, detail, courseCode)
+                                if (enableReminder) {
+                                    val remCategory = when (kind) {
+                                        "KELAS" -> "Kelas"
+                                        "TUGAS" -> "Tugas"
+                                        "BELAJAR" -> "Belajar"
+                                        "KEUANGAN" -> "Keuangan"
+                                        else -> "Umum"
+                                    }
+                                    database.addReminder(
+                                        title = savedAgenda.title,
+                                        detail = "${fullDaysId[selectedDay]} • ${savedAgenda.time}" + (if (detail.isNotBlank()) " • $detail" else ""),
+                                        time = savedAgenda.time.substringBefore('–'),
+                                        category = remCategory,
+                                        enabled = true,
+                                        sourceId = savedAgenda.id
+                                    )
+                                }
+                            }
+                        }
+                            .onSuccess {
+                                savedCourses = database.courses()
+                                entries = (0..6).flatMap(database::agenda)
+                                reminders = database.reminders()
+                                version++
+                                adding = false
+                                title = ""
+                                time = ""
+                                endTime = ""
+                                detail = ""
+                                kind = "AGENDA"
+                            }
+                            .onFailure {
+                                error = if (isEn) "Failed to save agenda. Please retry." else "Agenda gagal disimpan. Coba lagi."
+                            }
                         saving = false
                     }
                 }
@@ -332,14 +546,23 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
         AlertDialog(
             onDismissRequest = { inspecting = null },
             title = { Text(entry.title) },
-            text = { Text("${fullDays[entry.day]} • " + lString("Pukul ${entry.time}", "At ${entry.time}")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("${fullDays[entry.day]} • " + lString("Pukul ${entry.time}", "At ${entry.time}"))
+                    if (entry.detail.isNotBlank()) {
+                        Text(entry.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            },
             confirmButton = {
                 TextButton(onClick = { inspecting = null }) { Text(lString("Tutup", "Close")) }
             },
             dismissButton = {
                 TextButton(onClick = {
                     scope.launch {
-                        withContext(Dispatchers.IO) { database.deleteAgenda(entry.id) }
+                        database.deleteAgenda(entry.id)
+                        entries = (0..6).flatMap(database::agenda)
+                        reminders = database.reminders()
                         version++
                         inspecting = null
                     }
@@ -350,22 +573,30 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
 }
 
 private fun isClassEntry(entry: AgendaRow, savedCourses: List<CourseRow>): Boolean {
-    if (entry.id.startsWith("demo-class")) return true
-    if (entry.id.startsWith("demo-study") || entry.id.startsWith("demo-deadline") || entry.id.startsWith("demo-lab") || entry.id.startsWith("demo-quiz") || entry.id.startsWith("demo-project") || entry.id.startsWith("demo-kos")) return false
-    val (code, _) = getCourseInfo(entry.title)
+    if (entry.kind.equals("KELAS", ignoreCase = true)) return true
+    if (entry.kind.equals("BELAJAR", ignoreCase = true) || entry.kind.equals("TUGAS", ignoreCase = true) || entry.kind.equals("KEUANGAN", ignoreCase = true)) return false
+    if (entry.courseId.isNotBlank()) return true
+    val (code, _) = getCourseInfo(entry.title, savedCourses)
     if (code.isNotBlank()) return true
     return savedCourses.any {
         it.code.equals(entry.title, ignoreCase = true) ||
-        it.title.equals(entry.title, ignoreCase = true) ||
-        entry.title.contains(it.code, ignoreCase = true) ||
-        entry.title.contains(it.title, ignoreCase = true)
+            it.title.equals(entry.title, ignoreCase = true) ||
+            (it.code.isNotBlank() && entry.title.contains(it.code, ignoreCase = true)) ||
+            (it.title.isNotBlank() && entry.title.contains(it.title, ignoreCase = true))
     }
 }
 
 private fun isStudyEntry(entry: AgendaRow): Boolean {
-    return entry.id.startsWith("demo-study") || entry.title.contains("belajar", ignoreCase = true) || entry.title.contains("latihan", ignoreCase = true) || entry.title.contains("study", ignoreCase = true)
+    return entry.kind.equals("BELAJAR", ignoreCase = true) ||
+        entry.title.contains("belajar", ignoreCase = true) ||
+        entry.title.contains("latihan", ignoreCase = true) ||
+        entry.title.contains("study", ignoreCase = true)
 }
 
 private fun isDeadlineEntry(entry: AgendaRow): Boolean {
-    return entry.id.startsWith("demo-deadline") || entry.title.contains("tugas", ignoreCase = true) || entry.title.contains("praktikum", ignoreCase = true) || entry.title.contains("deadline", ignoreCase = true) || entry.title.contains("tenggat", ignoreCase = true)
+    return entry.kind.equals("TUGAS", ignoreCase = true) ||
+        entry.title.contains("tugas", ignoreCase = true) ||
+        entry.title.contains("praktikum", ignoreCase = true) ||
+        entry.title.contains("deadline", ignoreCase = true) ||
+        entry.title.contains("tenggat", ignoreCase = true)
 }
