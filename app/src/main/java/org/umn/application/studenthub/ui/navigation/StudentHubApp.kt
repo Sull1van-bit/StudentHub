@@ -119,32 +119,65 @@ fun StudentHubApp(
                     ModalDrawerSheet(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .widthIn(max = 300.dp)
+                            .widthIn(max = 310.dp)
+                            .verticalScroll(rememberScrollState())
                     ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                "StudentHub",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                lString("Menu Navigasi Utama", "Main Navigation Menu"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
                         Text(
-                            "StudentHub",
-                            Modifier.padding(horizontal = 28.dp, vertical = 24.dp),
-                            style = MaterialTheme.typography.titleLarge
+                            lString("PERKULIAHAN & EVALUASI", "ACADEMICS & EVALUATION"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)
                         )
-                        val drawerDestinations = listOf(
-                            Triple(lString("Akademik", "Academics"), Screen.Academic.route, Screen.Academic.icon),
-                            Triple(lString("Catatan", "Notes"), Screen.Notes.route, Screen.Notes.icon),
-                            Triple(lString("Keuangan", "Finances"), Screen.Finance.route, Screen.Finance.icon),
-                            Triple(lString("Nilai", "Grades"), Screen.Grades.route, Screen.Grades.icon),
-                            Triple(lString("Belajar", "Study"), Screen.Learning.route, Screen.Learning.icon),
-                            Triple(lString("Pindai Catatan", "Scan Notes"), Screen.ScanNote.route, Screen.ScanNote.icon)
+                        val academicDrawerItems = listOf(
+                            Triple(
+                                lString("Mata Kuliah & Tugas", "Courses & Tasks"),
+                                lString("Daftar matkul, SKS & tenggat tugas", "Courses, credits & task deadlines"),
+                                Screen.Academic
+                            ),
+                            Triple(
+                                lString("Nilai & Target IPK", "Grades & GPA Target"),
+                                lString("IPS semester, IPK & nilai huruf", "Term GPA, cumulative GPA & grades"),
+                                Screen.Grades
+                            ),
+                            Triple(
+                                lString("Rencana & Progres Belajar", "Study Plan & Progress"),
+                                lString("Skor kesiapan & rekomendasi waktu belajar", "Readiness score & study schedule"),
+                                Screen.Learning
+                            )
                         )
-                        drawerDestinations.forEach { (label, destination, icon) ->
+                        academicDrawerItems.forEach { (label, subtitle, screen) ->
                             NavigationDrawerItem(
-                                label = { Text(label) },
-                                icon = { Icon(icon, contentDescription = null) },
-                                selected = currentBaseRoute == destination,
+                                label = {
+                                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                        Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                                        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                },
+                                icon = { Icon(screen.icon, contentDescription = null) },
+                                selected = currentBaseRoute == screen.route,
                                 modifier = Modifier
                                     .padding(NavigationDrawerItemDefaults.ItemPadding)
-                                    .testTag("drawer-$destination"),
+                                    .testTag("drawer-${screen.route}"),
                                 onClick = {
                                     scope.launch { drawerState.close() }
-                                    navController.navigate(destination) {
+                                    navController.navigate(screen.route) {
                                         popUpTo(navController.graph.findStartDestination().id) {
                                             saveState = true
                                         }
@@ -154,9 +187,93 @@ fun StudentHubApp(
                                 }
                             )
                         }
-                        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+
+                        HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+
+                        Text(
+                            lString("CATATAN & DOKUMEN", "NOTES & DOCUMENTS"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)
+                        )
+                        val noteDrawerItems = listOf(
+                            Triple(
+                                lString("Buku Catatan & Studio AI", "Notebook & AI Studio"),
+                                lString("Catatan, rangkuman, kanvas & kuis", "Notes, summary, canvas & quiz"),
+                                Screen.Notes
+                            ),
+                            Triple(
+                                lString("Pindai Kamera & Impor PDF", "Camera Scan & PDF Import"),
+                                lString("OCR foto catatan & unggah file PDF", "Photo OCR & upload PDF files"),
+                                Screen.ScanNote
+                            )
+                        )
+                        noteDrawerItems.forEach { (label, subtitle, screen) ->
+                            NavigationDrawerItem(
+                                label = {
+                                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                        Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                                        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                },
+                                icon = { Icon(screen.icon, contentDescription = null) },
+                                selected = currentBaseRoute == screen.route,
+                                modifier = Modifier
+                                    .padding(NavigationDrawerItemDefaults.ItemPadding)
+                                    .testTag("drawer-${screen.route}"),
+                                onClick = {
+                                    scope.launch { drawerState.close() }
+                                    navController.navigate(screen.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                }
+                            )
+                        }
+
+                        HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+
+                        Text(
+                            lString("KEUANGAN & PENGATURAN", "FINANCE & SETTINGS"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)
+                        )
                         NavigationDrawerItem(
-                            label = { Text(lString("Profil & tampilan", "Profile & Appearance")) },
+                            label = {
+                                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    Text(lString("Keuangan & Anggaran", "Finances & Budget"), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                                    Text(lString("Pemasukan, pengeluaran & saldo", "Income, expenses & balance"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            },
+                            icon = { Icon(Screen.Finance.icon, contentDescription = null) },
+                            selected = currentBaseRoute == Screen.Finance.route,
+                            modifier = Modifier
+                                .padding(NavigationDrawerItemDefaults.ItemPadding)
+                                .testTag("drawer-${Screen.Finance.route}"),
+                            onClick = {
+                                scope.launch { drawerState.close() }
+                                navController.navigate(Screen.Finance.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            }
+                        )
+                        NavigationDrawerItem(
+                            label = {
+                                Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                                    Text(lString("Profil & Pengaturan", "Profile & Settings"), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                                    Text(lString("Data mahasiswa, tema & bahasa", "Student profile, theme & language"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            },
                             icon = { Icon(Screen.Profile.icon, contentDescription = null) },
                             selected = currentBaseRoute == "profile",
                             onClick = {
@@ -174,7 +291,7 @@ fun StudentHubApp(
                                 .testTag("drawer-profile")
                         )
                         NavigationDrawerItem(
-                            label = { Text(lString("Ulangi Onboarding", "Restart Onboarding")) },
+                            label = { Text(lString("Ulangi Setup Awal (Reset)", "Restart Initial Setup (Reset)")) },
                             icon = { Icon(Screen.More.icon, contentDescription = null) },
                             selected = currentBaseRoute == "onboarding",
                             onClick = {
@@ -200,6 +317,7 @@ fun StudentHubApp(
                                 .padding(NavigationDrawerItemDefaults.ItemPadding)
                                 .testTag("drawer-onboarding")
                         )
+                        Spacer(Modifier.height(16.dp))
                     }
                 }
             ) {
@@ -208,21 +326,22 @@ fun StudentHubApp(
                         .testTag("studenthub-root")
                         .semantics { stateDescription = if (darkTheme) "Tema gelap" else "Tema terang" },
                     topBar = {
-                        if (currentBaseRoute != "onboarding" && currentBaseRoute != "scan_note") {
+                        if (currentBaseRoute != "onboarding") {
                             TopAppBar(
                                 title = {
                                     Text(
                                         when (currentBaseRoute) {
                                             "home" -> "StudentHub"
-                                            "schedule" -> lString("Jadwal", "Schedule")
-                                            "academic" -> lString("Akademik", "Academics")
-                                            "notes" -> lString("Catatan", "Notes")
-                                            "finance" -> lString("Keuangan", "Finances")
-                                            "grades" -> lString("Pelacak akademik", "Academic Tracker")
-                                            "learning" -> lString("Rekomendasi belajar", "Study Recommendations")
-                                            "course" -> lString("Detail mata kuliah", "Course Details")
-                                            "editor" -> lString("Editor catatan", "Note Editor")
-                                            "profile" -> lString("Profil", "Profile")
+                                            "schedule" -> lString("Jadwal & Kalender", "Schedule & Calendar")
+                                            "academic" -> lString("Mata Kuliah & Tugas", "Courses & Tasks")
+                                            "notes" -> lString("Buku Catatan & Studio AI", "Notebook & AI Studio")
+                                            "scan_note" -> lString("Pindai & Impor PDF", "Scan & Import PDF")
+                                            "finance" -> lString("Keuangan & Anggaran", "Finances & Budget")
+                                            "grades" -> lString("Nilai & Target IPK", "Grades & GPA Target")
+                                            "learning" -> lString("Rencana & Progres Belajar", "Study Plan & Progress")
+                                            "course" -> lString("Detail Mata Kuliah", "Course Details")
+                                            "editor" -> lString("Editor Catatan", "Note Editor")
+                                            "profile" -> lString("Profil & Pengaturan", "Profile & Settings")
                                             else -> "StudentHub"
                                         }
                                     )
@@ -251,7 +370,7 @@ fun StudentHubApp(
                                                 }
                                             }
                                         ) {
-                                            Icon(Icons.Default.School, lString("Akademik", "Academics"))
+                                            Icon(Icons.Default.School, lString("Mata Kuliah & Tugas", "Courses & Tasks"))
                                         }
                                         IconButton(
                                             modifier = Modifier.testTag("nav-reminders"),
@@ -265,7 +384,7 @@ fun StudentHubApp(
                         }
                     },
                     bottomBar = {
-                        if (currentBaseRoute != "onboarding" && currentBaseRoute != "scan_note") {
+                        if (currentBaseRoute != "onboarding") {
                             NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
                                 primary.forEach { screen ->
                                     NavigationBarItem(
@@ -284,7 +403,7 @@ fun StudentHubApp(
                                         label = {
                                             Text(
                                                 when (screen.route) {
-                                                    "home" -> lString("Home", "Home")
+                                                    "home" -> lString("Beranda", "Home")
                                                     "schedule" -> lString("Jadwal", "Schedule")
                                                     "profile" -> lString("Profil", "Profile")
                                                     else -> screen.title
@@ -300,7 +419,7 @@ fun StudentHubApp(
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .padding(if (currentBaseRoute == "onboarding" || currentBaseRoute == "scan_note") PaddingValues(0.dp) else padding)
+                            .padding(if (currentBaseRoute == "onboarding") PaddingValues(0.dp) else padding)
                     ) {
                         NavHost(
                             navController = navController,

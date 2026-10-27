@@ -6,8 +6,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -19,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -31,6 +36,7 @@ import org.umn.application.studenthub.data.local.AgendaRow
 import org.umn.application.studenthub.data.local.CourseRow
 import org.umn.application.studenthub.data.local.ReminderItemRow
 import org.umn.application.studenthub.data.local.StudentHubDatabase
+import org.umn.application.studenthub.data.local.TaskRow
 import org.umn.application.studenthub.ui.dashboard.AgendaEntry
 import org.umn.application.studenthub.ui.dashboard.ReminderRow
 import org.umn.application.studenthub.ui.dashboard.SectionHeading
@@ -41,6 +47,7 @@ import org.umn.application.studenthub.ui.localization.AppLanguage
 import org.umn.application.studenthub.ui.localization.LocalAppLanguage
 import org.umn.application.studenthub.ui.localization.lString
 import java.time.LocalDate
+import java.time.YearMonth
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,7 +55,16 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
     val today = remember { LocalDate.now() }
     val todayDayIndex = (today.dayOfWeek.value - 1).coerceIn(0, 6)
     var selectedDay by rememberSaveable { mutableIntStateOf(todayDayIndex) }
-    var daily by rememberSaveable { mutableStateOf(false) }
+    // viewMode: 0 = Kalender (Monthly Calendar), 1 = Minggu (Week), 2 = Hari (Day)
+    var viewMode by rememberSaveable { mutableIntStateOf(0) }
+    var displayedYear by rememberSaveable { mutableIntStateOf(today.year) }
+    var displayedMonthValue by rememberSaveable { mutableIntStateOf(today.monthValue) }
+    var selectedDateEpochDay by rememberSaveable { mutableLongStateOf(today.toEpochDay()) }
+    val selectedCalendarDate = remember(selectedDateEpochDay) { LocalDate.ofEpochDay(selectedDateEpochDay) }
+    val displayedYearMonth = remember(displayedYear, displayedMonthValue) {
+        YearMonth.of(displayedYear, displayedMonthValue.coerceIn(1, 12))
+    }
+
     var adding by rememberSaveable { mutableStateOf(false) }
     var title by rememberSaveable { mutableStateOf("") }
     var time by rememberSaveable { mutableStateOf("") }
@@ -64,6 +80,7 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
     var entries by remember { mutableStateOf(runCatching { (0..6).flatMap(database::agenda) }.getOrDefault(emptyList())) }
     var savedCourses by remember { mutableStateOf(runCatching { database.courses() }.getOrDefault(emptyList())) }
     var reminders by remember { mutableStateOf(runCatching { database.reminders() }.getOrDefault(emptyList())) }
+    var savedTasks by remember { mutableStateOf(runCatching { database.tasks() }.getOrDefault(emptyList())) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
@@ -99,7 +116,7 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
                             )
                         }
                         if (!already) {
-                            val detail = buildList {
+                            val detailText = buildList {
                                 add(course.code)
                                 if (course.room.isNotBlank()) add(course.room)
                             }.joinToString(" • ")
@@ -109,7 +126,7 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
                                 time = pair.second,
                                 title = course.title,
                                 kind = "KELAS",
-                                detail = detail,
+                                detail = detailText,
                                 courseId = course.code
                             )
                             agendas.add(synth)
@@ -120,12 +137,18 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
                     }
                 }
                 val rems = database.reminders()
-                Triple(agendas, courses, rems)
+                val tasks = database.tasks()
+                listOf(agendas, courses, rems, tasks)
             }
-        }.onSuccess { (agendas, courses, rems) ->
-            entries = agendas
-            savedCourses = courses
-            reminders = rems
+        }.onSuccess { result ->
+            @Suppress("UNCHECKED_CAST")
+            entries = result[0] as List<AgendaRow>
+            @Suppress("UNCHECKED_CAST")
+            savedCourses = result[1] as List<CourseRow>
+            @Suppress("UNCHECKED_CAST")
+            reminders = result[2] as List<ReminderItemRow>
+            @Suppress("UNCHECKED_CAST")
+            savedTasks = result[3] as List<TaskRow>
             error = null
         }.onFailure {
             error = if (isEn) "Schedule could not be loaded." else "Gagal memuat jadwal agenda."
@@ -169,94 +192,363 @@ fun ScheduleScreen(onCourseClick: (String) -> Unit, onLearningClick: () -> Unit)
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(if (isEn) "Class Schedule" else "Jadwal Kuliah", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
-            SupportingText(weekRangeSubtitle)
+            Text(if (isEn) "Schedule & Calendar" else "Jadwal & Kalender Kuliah", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium)
+            SupportingText(
+                if (viewMode == 0) {
+                    "${getFullMonthName(displayedYearMonth.monthValue, isEn)} ${displayedYearMonth.year}"
+                } else {
+                    weekRangeSubtitle
+                }
+            )
         }
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            listOf(lString("Minggu", "Week"), lString("Hari", "Day")).forEachIndexed { index, label ->
-                SegmentedButton(selected = daily == (index == 1), onClick = { daily = index == 1 }, shape = SegmentedButtonDefaults.itemShape(index, 2)) {
+            val modeLabels = listOf(
+                lString("Kalender", "Calendar"),
+                lString("Minggu", "Week"),
+                lString("Hari", "Day")
+            )
+            modeLabels.forEachIndexed { index, label ->
+                SegmentedButton(
+                    selected = viewMode == index,
+                    onClick = { viewMode = index },
+                    shape = SegmentedButtonDefaults.itemShape(index, modeLabels.size)
+                ) {
                     Text(label)
                 }
             }
         }
-        if (!daily) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            days.forEachIndexed { index, day ->
-                val date = weekDates[index]
-                val isToday = (index == todayDayIndex)
-                val isSelected = (selectedDay == index)
+
+        if (viewMode == 0) {
+            // Tampilan Kalender Bulanan Interaktif
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth().testTag("schedule-calendar-card")
+            ) {
                 Column(
-                    Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
-                        .background(
-                            when {
-                                isSelected -> MaterialTheme.colorScheme.primaryContainer
-                                isToday -> MaterialTheme.colorScheme.surfaceVariant
-                                else -> MaterialTheme.colorScheme.surface
-                            }
-                        )
-                        .border(
-                            width = if (isToday && !isSelected) 1.5.dp else 0.dp,
-                            color = if (isToday && !isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                            shape = RoundedCornerShape(16.dp)
-                        )
-                        .clickable { selectedDay = index }.height(92.dp).padding(vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically)
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        day,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        "${date.dayOfMonth}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                    )
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (isToday) {
+                        IconButton(
+                            onClick = {
+                                val prev = displayedYearMonth.minusMonths(1)
+                                displayedYear = prev.year
+                                displayedMonthValue = prev.monthValue
+                            }
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = lString("Bulan sebelumnya", "Previous month"))
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
-                                lString("Hari ini", "Today"),
+                                text = "${getFullMonthName(displayedYearMonth.monthValue, isEn)} ${displayedYearMonth.year}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (displayedYearMonth != YearMonth.from(today) || selectedCalendarDate != today) {
+                                TextButton(
+                                    onClick = {
+                                        displayedYear = today.year
+                                        displayedMonthValue = today.monthValue
+                                        selectedDateEpochDay = today.toEpochDay()
+                                        selectedDay = todayDayIndex
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(26.dp)
+                                ) {
+                                    Text(lString("Ke Hari Ini", "Jump to Today"), style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                        IconButton(
+                            onClick = {
+                                val next = displayedYearMonth.plusMonths(1)
+                                displayedYear = next.year
+                                displayedMonthValue = next.monthValue
+                            }
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = lString("Bulan berikutnya", "Next month"))
+                        }
+                    }
+
+                    // Header Hari (Sen..Min)
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        days.forEach { dLabel ->
+                            Text(
+                                text = dLabel,
+                                modifier = Modifier.weight(1f),
+                                textAlign = TextAlign.Center,
                                 style = MaterialTheme.typography.labelSmall,
-                                fontSize = 9.sp,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        if (entries.any { it.day == index }) {
-                            Icon(
-                                painterResource(R.drawable.hub_day_dot),
-                                null,
-                                Modifier.size(5.dp),
-                                tint = MaterialTheme.colorScheme.primary
+                    }
+
+                    val firstOfMonth = displayedYearMonth.atDay(1)
+                    val leadingEmpty = (firstOfMonth.dayOfWeek.value - 1).coerceIn(0, 6)
+                    val daysInMonth = displayedYearMonth.lengthOfMonth()
+                    val totalCells = ((leadingEmpty + daysInMonth + 6) / 7) * 7
+                    val rowsCount = totalCells / 7
+
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        for (rowIdx in 0 until rowsCount) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                for (colIdx in 0..6) {
+                                    val cellIndex = rowIdx * 7 + colIdx
+                                    val dayNumber = cellIndex - leadingEmpty + 1
+                                    if (dayNumber !in 1..daysInMonth) {
+                                        Spacer(modifier = Modifier.weight(1f).height(46.dp))
+                                    } else {
+                                        val cellDate = displayedYearMonth.atDay(dayNumber)
+                                        val cellDayOfWeek = (cellDate.dayOfWeek.value - 1).coerceIn(0, 6)
+                                        val isCellToday = cellDate == today
+                                        val isCellSelected = cellDate == selectedCalendarDate && selectedDay == cellDayOfWeek
+
+                                        val dayAgendas = entries.filter { it.day == cellDayOfWeek }
+                                        val hasClass = dayAgendas.any { isClassEntry(it, savedCourses) }
+                                        val hasStudyOrOther = dayAgendas.any { !isClassEntry(it, savedCourses) }
+                                        val hasTaskDeadline = savedTasks.any {
+                                            !it.completed && it.deadline.trim() == cellDate.toString()
+                                        } || dayAgendas.any { isDeadlineEntry(it) }
+
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(46.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(
+                                                    when {
+                                                        isCellSelected -> MaterialTheme.colorScheme.primary
+                                                        isCellToday -> MaterialTheme.colorScheme.primaryContainer
+                                                        else -> Color.Transparent
+                                                    }
+                                                )
+                                                .border(
+                                                    width = if (isCellToday && !isCellSelected) 1.dp else 0.dp,
+                                                    color = if (isCellToday && !isCellSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                                    shape = RoundedCornerShape(10.dp)
+                                                )
+                                                .clickable {
+                                                    selectedDateEpochDay = cellDate.toEpochDay()
+                                                    selectedDay = cellDayOfWeek
+                                                }
+                                                .padding(vertical = 4.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = "$dayNumber",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontWeight = if (isCellSelected || isCellToday) FontWeight.Bold else FontWeight.Medium,
+                                                color = when {
+                                                    isCellSelected -> MaterialTheme.colorScheme.onPrimary
+                                                    isCellToday -> MaterialTheme.colorScheme.onPrimaryContainer
+                                                    else -> MaterialTheme.colorScheme.onSurface
+                                                }
+                                            )
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                if (hasClass) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(5.dp)
+                                                            .clip(CircleShape)
+                                                            .background(
+                                                                if (isCellSelected) MaterialTheme.colorScheme.onPrimary
+                                                                else MaterialTheme.colorScheme.primary
+                                                            )
+                                                    )
+                                                }
+                                                if (hasTaskDeadline) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(5.dp)
+                                                            .clip(CircleShape)
+                                                            .background(
+                                                                if (isCellSelected) MaterialTheme.colorScheme.errorContainer
+                                                                else MaterialTheme.colorScheme.error
+                                                            )
+                                                    )
+                                                }
+                                                if (hasStudyOrOther) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(5.dp)
+                                                            .clip(CircleShape)
+                                                            .background(
+                                                                if (isCellSelected) MaterialTheme.colorScheme.secondaryContainer
+                                                                else MaterialTheme.colorScheme.tertiary
+                                                            )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CalendarLegendItem(color = MaterialTheme.colorScheme.primary, label = lString("Kelas", "Class"))
+                        CalendarLegendItem(color = MaterialTheme.colorScheme.error, label = lString("Tenggat Tugas", "Task Deadline"))
+                        CalendarLegendItem(color = MaterialTheme.colorScheme.tertiary, label = lString("Belajar / Agenda", "Study / Agenda"))
+                    }
+                }
+            }
+        } else if (viewMode == 1) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                days.forEachIndexed { index, day ->
+                    val date = weekDates[index]
+                    val isToday = (index == todayDayIndex)
+                    val isSelected = (selectedDay == index)
+                    Column(
+                        Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                            .background(
+                                when {
+                                    isSelected -> MaterialTheme.colorScheme.primaryContainer
+                                    isToday -> MaterialTheme.colorScheme.surfaceVariant
+                                    else -> MaterialTheme.colorScheme.surface
+                                }
                             )
-                        } else if (!isToday) {
-                            Spacer(Modifier.size(5.dp))
+                            .border(
+                                width = if (isToday && !isSelected) 1.5.dp else 0.dp,
+                                color = if (isToday && !isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .clickable {
+                                selectedDay = index
+                                selectedDateEpochDay = date.toEpochDay()
+                            }
+                            .height(92.dp)
+                            .padding(vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically)
+                    ) {
+                        Text(
+                            day,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "${date.dayOfMonth}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = if (isSelected || isToday) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isToday) {
+                                Text(
+                                    lString("Hari ini", "Today"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 9.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (entries.any { it.day == index }) {
+                                Icon(
+                                    painterResource(R.drawable.hub_day_dot),
+                                    null,
+                                    Modifier.size(5.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            } else if (!isToday) {
+                                Spacer(Modifier.size(5.dp))
+                            }
                         }
                     }
                 }
             }
         }
+
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            val selectedDate = weekDates[selectedDay]
-            val headingTitle = "${fullDays[selectedDay]}, ${selectedDate.dayOfMonth} ${getFullMonthName(selectedDate.monthValue, isEn)}"
-            val headingAction = if (selectedDay != todayDayIndex) lString("Ke Hari Ini", "Today") else null
-            SectionHeading(headingTitle, headingAction) { selectedDay = todayDayIndex }
+            val selectedDate = if (viewMode == 0 && (selectedCalendarDate.dayOfWeek.value - 1).coerceIn(0, 6) == selectedDay) {
+                selectedCalendarDate
+            } else {
+                weekDates[selectedDay]
+            }
+            val headingTitle = "${fullDays[selectedDay]}, ${selectedDate.dayOfMonth} ${getFullMonthName(selectedDate.monthValue, isEn)} ${selectedDate.year}"
+            val headingAction = if (selectedDay != todayDayIndex || selectedDate != today) lString("Ke Hari Ini", "Today") else null
+            SectionHeading(headingTitle, headingAction) {
+                selectedDay = todayDayIndex
+                selectedDateEpochDay = today.toEpochDay()
+                displayedYear = today.year
+                displayedMonthValue = today.monthValue
+            }
 
             if (loading) CircularProgressIndicator()
             error?.let { Text(it, color = MaterialTheme.colorScheme.error); TextButton(onClick = { version++ }) { Text(lString("Coba lagi", "Retry")) } }
             val dayEntries = entries.filter { it.day == selectedDay }.sortedBy { it.time }
             val dayClasses = dayEntries.filter { isClassEntry(it, savedCourses) }
+            val dateDeadlines = savedTasks.filter { !it.completed && it.deadline.trim() == selectedDate.toString() }
+
+            if (dateDeadlines.isNotEmpty()) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            lString("Tenggat Tugas pada Tanggal Ini (${dateDeadlines.size})", "Task Deadlines on This Date (${dateDeadlines.size})"),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        dateDeadlines.forEach { t ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { if (t.courseId.isNotBlank()) onCourseClick(t.courseId) },
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "• ${t.courseId.ifBlank { "Tugas" }}: ${t.title}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = t.deadline,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
             if (!loading && error == null) {
                 if (dayEntries.isNotEmpty()) {
@@ -600,3 +892,24 @@ private fun isDeadlineEntry(entry: AgendaRow): Boolean {
         entry.title.contains("deadline", ignoreCase = true) ||
         entry.title.contains("tenggat", ignoreCase = true)
 }
+
+@Composable
+private fun CalendarLegendItem(color: Color, label: String) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+

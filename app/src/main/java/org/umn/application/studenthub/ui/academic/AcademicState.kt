@@ -216,7 +216,7 @@ internal class AcademicState(
         val normalizedTime = if (time.isNotBlank()) StudentHubDatabase.normalizeTimeFormat(time) else ""
         val hasValidSchedule = day != null && day in 0..6 &&
             Regex("(?:[01][0-9]|2[0-3])\\.[0-5][0-9](?:–(?:[01][0-9]|2[0-3])\\.[0-5][0-9])?").matches(normalizedTime)
-        val rangeDisplay = if (hasValidSchedule) computeClassTimeRange(normalizedTime) else ""
+        val rangeDisplay = if (hasValidSchedule) computeClassTimeRange(normalizedTime, sks) else ""
         val scheduleStr = if (hasValidSchedule) "${daysId[day!!]}, $rangeDisplay" else ""
 
         val db = database

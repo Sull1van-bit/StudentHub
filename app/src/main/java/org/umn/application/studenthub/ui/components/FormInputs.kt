@@ -88,25 +88,26 @@ class RupiahVisualTransformation : VisualTransformation {
     }
 }
 
-fun defaultEndTimeFor(startTime: String): String {
+fun defaultEndTimeFor(startTime: String, sks: Int = 2): String {
     val clean = startTime.trim().replace(':', '.')
     val parts = clean.split('.')
-    if (parts.size == 2) {
+    if (parts.size == 2 && parts[1].length == 2) {
         val h = parts[0].toIntOrNull() ?: return ""
         val m = parts[1].toIntOrNull() ?: return ""
         if (h in 0..23 && m in 0..59) {
-            val endTotal = (h * 60 + m + 100) % (24 * 60)
+            val durationMinutes = sks.coerceIn(1, 12) * 60
+            val endTotal = (h * 60 + m + durationMinutes) % (24 * 60)
             return String.format("%02d.%02d", endTotal / 60, endTotal % 60)
         }
     }
     return ""
 }
 
-fun combineTimeRange(startTime: String, endTime: String): String {
+fun combineTimeRange(startTime: String, endTime: String, sks: Int = 2): String {
     val start = startTime.trim()
     val end = endTime.trim()
     if (start.isBlank()) return ""
-    val resolvedEnd = if (end.isNotBlank()) end else defaultEndTimeFor(start)
+    val resolvedEnd = if (end.isNotBlank()) end else defaultEndTimeFor(start, sks)
     return if (resolvedEnd.isNotBlank()) "$start–$resolvedEnd" else start
 }
 
@@ -117,7 +118,7 @@ fun TimePickerField(
     onValueChange: (String) -> Unit,
     label: String,
     modifier: Modifier = Modifier,
-    placeholder: String = "09.00",
+    placeholder: String = "08.00",
     isError: Boolean = false,
     testTag: String? = null
 ) {
@@ -204,12 +205,24 @@ fun TimeRangePickerRow(
     onStartTimeChange: (String) -> Unit,
     onEndTimeChange: (String) -> Unit,
     modifier: Modifier = Modifier,
+    sks: Int = 2,
     startLabel: String = lString("Jam Mulai", "Start Time"),
     endLabel: String = lString("Jam Selesai", "End Time"),
     isError: Boolean = false,
     startTestTag: String? = null,
     endTestTag: String? = null
 ) {
+    val effectiveSks = sks.coerceIn(1, 12)
+    val defaultPlaceholderEnd = remember(startTime, effectiveSks) {
+        if (startTime.isNotBlank()) {
+            defaultEndTimeFor(startTime, effectiveSks).ifBlank {
+                defaultEndTimeFor("08.00", effectiveSks)
+            }
+        } else {
+            defaultEndTimeFor("08.00", effectiveSks)
+        }
+    }
+
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -219,15 +232,13 @@ fun TimeRangePickerRow(
             value = startTime,
             onValueChange = { newStart ->
                 onStartTimeChange(newStart)
-                if (endTime.isBlank()) {
-                    val suggested = defaultEndTimeFor(newStart)
-                    if (suggested.isNotBlank()) {
-                        onEndTimeChange(suggested)
-                    }
+                val suggested = defaultEndTimeFor(newStart, effectiveSks)
+                if (suggested.isNotBlank()) {
+                    onEndTimeChange(suggested)
                 }
             },
             label = startLabel,
-            placeholder = "07.00",
+            placeholder = "08.00",
             isError = isError,
             testTag = startTestTag,
             modifier = Modifier.weight(1f)
@@ -236,7 +247,7 @@ fun TimeRangePickerRow(
             value = endTime,
             onValueChange = onEndTimeChange,
             label = endLabel,
-            placeholder = if (startTime.isNotBlank()) defaultEndTimeFor(startTime).ifBlank { "08.40" } else "08.40",
+            placeholder = defaultPlaceholderEnd,
             isError = isError,
             testTag = endTestTag,
             modifier = Modifier.weight(1f)

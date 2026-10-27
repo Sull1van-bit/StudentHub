@@ -1108,6 +1108,7 @@ fun AcademicScreen(onCourseClick: (String) -> Unit) {
         var addLecturer by remember { mutableStateOf("") }
         var addError by remember { mutableStateOf(false) }
 
+        val activeSksInt = addSks.toIntOrNull()?.coerceIn(1, 12) ?: 2
         AlertDialog(
             onDismissRequest = { showAddCourseDialog = false },
             title = { Text(lString("Tambah Mata Kuliah", "Add Course")) },
@@ -1121,6 +1122,10 @@ fun AcademicScreen(onCourseClick: (String) -> Unit) {
                                 addCode = c.code
                                 addTitle = c.title
                                 addSks = c.sks.toString()
+                                if (addTime.isNotBlank()) {
+                                    val autoEnd = org.umn.application.studenthub.ui.components.defaultEndTimeFor(addTime, c.sks)
+                                    if (autoEnd.isNotBlank()) addEndTime = autoEnd
+                                }
                                 addError = false
                             } else {
                                 addCode = ""
@@ -1133,18 +1138,34 @@ fun AcademicScreen(onCourseClick: (String) -> Unit) {
                     OutlinedTextField(addTitle, { addTitle = it; addError = false }, label = { Text(lString("Nama Mata Kuliah", "Course Name")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(
                         addSks,
-                        { addSks = it.filter { ch -> ch.isDigit() }; addError = false },
+                        { newVal ->
+                            val cleanDigits = newVal.filter { ch -> ch.isDigit() }
+                            addSks = cleanDigits
+                            val parsedSks = cleanDigits.toIntOrNull()
+                            if (parsedSks != null && parsedSks in 1..12 && addTime.isNotBlank()) {
+                                val autoEnd = org.umn.application.studenthub.ui.components.defaultEndTimeFor(addTime, parsedSks)
+                                if (autoEnd.isNotBlank()) addEndTime = autoEnd
+                            }
+                            addError = false
+                        },
                         label = { Text(lString("Jumlah SKS (1-24)", "Credits / SKS (1-24)")) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
-                    Text(lString("Jam Perkuliahan (Mulai - Selesai, opsional):", "Class Hours (Start - End, optional):"), style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        lString(
+                            "Jam Perkuliahan (Estimasi selesai: $activeSksInt SKS = $activeSksInt jam):",
+                            "Class Hours (Auto-estimated end: $activeSksInt SKS = $activeSksInt hrs):"
+                        ),
+                        style = MaterialTheme.typography.labelMedium
+                    )
                     org.umn.application.studenthub.ui.components.TimeRangePickerRow(
                         startTime = addTime,
                         endTime = addEndTime,
                         onStartTimeChange = { addTime = it; addError = false },
-                        onEndTimeChange = { addEndTime = it; addError = false }
+                        onEndTimeChange = { addEndTime = it; addError = false },
+                        sks = activeSksInt
                     )
                     OutlinedTextField(addRoom, { addRoom = it }, label = { Text(lString("Ruangan (opsional)", "Room (optional)")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(addLecturer, { addLecturer = it }, label = { Text(lString("Nama Dosen (opsional)", "Lecturer Name (optional)")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -1174,7 +1195,7 @@ fun AcademicScreen(onCourseClick: (String) -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     val sksNum = addSks.toIntOrNull()
-                    val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(addTime, addEndTime)
+                    val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(addTime, addEndTime, sksNum ?: 2)
                     if (addCode.isNotBlank() && addTitle.isNotBlank() && sksNum != null && sksNum in 1..24) {
                         val ok = state.addCourse(
                             code = addCode,

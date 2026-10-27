@@ -74,14 +74,25 @@ data class CanvasStudyData(
     val caseStudyText: String
 )
 
+data class ScoreReasonItem(
+    val label: String,
+    val detail: String,
+    val rawPercent: Int,
+    val weightPercent: Int,
+    val contributionPercent: Int
+)
+
 data class StudentProgressAssessment(
     val hasData: Boolean = true,
     val readinessScore: Int,
     val statusLabel: String,
     val summaryText: String,
+    val scoreReasoningSummary: String = "",
+    val scoreBreakdown: List<ScoreReasonItem> = emptyList(),
     val noteCoveragePercent: Int,
     val quizMasteryPercent: Int,
     val taskCompletionPercent: Int,
+    val semesterGradePercent: Int = 0,
     val currentGpa: Double,
     val targetGpa: Double,
     val strengths: List<String>,
@@ -713,26 +724,105 @@ object NoteAiAssistant {
             ((completedActionItems.toDouble() / totalActionItems) * 100).roundToInt().coerceIn(0, 100)
         } else 0
 
+        val gradedCourses = courses.filter { it.grade != null }
+        val semesterGpa = calculateCurrentGpa(gradedCourses, 0.0, 0)
         val currentGpa = calculateCurrentGpa(courses, profile?.priorIpk ?: 0.0, profile?.priorSks ?: 0)
         val effectiveTargetGpa = if (targetGpa > 0.0) targetGpa else 3.5
-        val gpaScore = if (currentGpa > 0.0) {
-            ((currentGpa / effectiveTargetGpa) * 100).roundToInt().coerceIn(0, 100)
+        val semesterGradePercent = if (gradedCourses.isNotEmpty() && semesterGpa > 0.0) {
+            ((semesterGpa / effectiveTargetGpa) * 100).roundToInt().coerceIn(0, 100)
         } else 0
 
-        val activeScores = buildList {
-            if (courses.isNotEmpty() || nonBlankNotes.isNotEmpty()) add(noteCoveragePercent)
-            if (validProgress.isNotEmpty()) add(quizMasteryPercent)
-            if (totalActionItems > 0) add(taskCompletionPercent)
-            if (currentGpa > 0.0) add(gpaScore)
+        // Bobot transparan semester berjalan (Total = 100%):
+        // 1. Catatan Kuliah = 35%
+        // 2. Penyelesaian Tugas & Rencana = 35%
+        // 3. Latihan Kuis & Kanvas = 15%
+        // 4. Nilai Semester Berjalan = 15% (IPK semester lalu TIDAK dihitung ke progres belajar semester ini)
+        val noteWeight = 35
+        val taskWeight = 35
+        val quizWeight = 15
+        val gradeWeight = 15
+
+        val noteContribution = ((noteCoveragePercent * noteWeight) / 100.0).roundToInt()
+        val taskContribution = ((taskCompletionPercent * taskWeight) / 100.0).roundToInt()
+        val quizContribution = ((quizMasteryPercent * quizWeight) / 100.0).roundToInt()
+        val gradeContribution = ((semesterGradePercent * gradeWeight) / 100.0).roundToInt()
+
+        val readinessScore = (noteContribution + taskContribution + quizContribution + gradeContribution).coerceIn(0, 100)
+
+        val scoreBreakdown = listOf(
+            ScoreReasonItem(
+                label = if (isEn) "Lecture Notes Coverage" else "Cakupan Catatan Kuliah",
+                detail = if (courses.isNotEmpty()) {
+                    if (isEn) "$coursesWithNotes of ${courses.size} courses have notes (${nonBlankNotes.size} notes total)"
+                    else "$coursesWithNotes dari ${courses.size} matkul punya catatan (${nonBlankNotes.size} catatan)"
+                } else {
+                    if (isEn) "${nonBlankNotes.size} notes written"
+                    else "${nonBlankNotes.size} catatan ditulis"
+                },
+                rawPercent = noteCoveragePercent,
+                weightPercent = noteWeight,
+                contributionPercent = noteContribution
+            ),
+            ScoreReasonItem(
+                label = if (isEn) "Tasks & Study Plans" else "Tugas & Rencana Belajar",
+                detail = if (totalActionItems > 0) {
+                    if (isEn) "$completedActionItems of $totalActionItems tasks/plans completed"
+                    else "$completedActionItems dari $totalActionItems tugas/rencana selesai"
+                } else {
+                    if (isEn) "0 tasks or study plans recorded yet"
+                    else "Belum ada tugas atau rencana belajar (0/0)"
+                },
+                rawPercent = taskCompletionPercent,
+                weightPercent = taskWeight,
+                contributionPercent = taskContribution
+            ),
+            ScoreReasonItem(
+                label = if (isEn) "Quiz & Concept Canvas" else "Latihan Kuis & Kanvas",
+                detail = if (validProgress.isNotEmpty()) {
+                    if (isEn) "$totalMastered/$totalCards flashcards mastered • ${validProgress.size} notes practiced"
+                    else "$totalMastered/$totalCards kartu dikuasai • ${validProgress.size} catatan dilatih"
+                } else {
+                    if (isEn) "No quiz or canvas practice sessions yet"
+                    else "Belum ada sesi latihan kuis/kanvas"
+                },
+                rawPercent = quizMasteryPercent,
+                weightPercent = quizWeight,
+                contributionPercent = quizContribution
+            ),
+            ScoreReasonItem(
+                label = if (isEn) "Current Semester Grades" else "Nilai Semester Berjalan",
+                detail = if (gradedCourses.isNotEmpty()) {
+                    if (isEn) "${gradedCourses.size}/${courses.size} courses graded (Term GPA ${String.format("%.2f", semesterGpa)} vs Target ${String.format("%.2f", effectiveTargetGpa)})"
+                    else "${gradedCourses.size}/${courses.size} matkul dinilai (IPS ${String.format("%.2f", semesterGpa)} dari target ${String.format("%.2f", effectiveTargetGpa)})"
+                } else {
+                    if (isEn) "No current-semester course grades yet (prior GPA is excluded)"
+                    else "Belum ada nilai matkul semester ini (IPK lalu tidak dihitung)"
+                },
+                rawPercent = semesterGradePercent,
+                weightPercent = gradeWeight,
+                contributionPercent = gradeContribution
+            )
+        )
+
+        val scoreReasoningSummary = if (readinessScore == 0) {
+            if (isEn) {
+                "Why 0%: You currently have $coursesWithNotes/${courses.size} courses with notes (+0%), $completedActionItems/$totalActionItems completed tasks/plans (+0%), 0 practice sessions (+0%), and ${gradedCourses.size} graded courses this semester (+0%). Previous semester GPA is excluded so the score reflects actual current-semester study activity."
+            } else {
+                "Mengapa 0%: Saat ini tercatat $coursesWithNotes/${courses.size} matkul memiliki catatan (+0%), $completedActionItems/$totalActionItems tugas/rencana selesai (+0%), 0 sesi latihan kuis (+0%), dan ${gradedCourses.size} matkul semester ini yang memiliki nilai (+0%). IPK semester sebelumnya tidak dimasukkan agar skor murni mencerminkan aktivitas belajar semester ini."
+            }
+        } else {
+            if (isEn) {
+                "Why $readinessScore%: Calculated from Notes (+$noteContribution% of $noteWeight%), Tasks & Plans (+$taskContribution% of $taskWeight%), Practice (+$quizContribution% of $quizWeight%), and Term Grades (+$gradeContribution% of $gradeWeight%)."
+            } else {
+                "Alasan skor $readinessScore%: Dihitung dari kontribusi Catatan (+$noteContribution% dari bobot $noteWeight%), Tugas & Rencana (+$taskContribution% dari bobot $taskWeight%), Latihan (+$quizContribution% dari bobot $quizWeight%), serta Nilai Semester Ini (+$gradeContribution% dari bobot $gradeWeight%)."
+            }
         }
-        val readinessScore = if (activeScores.isNotEmpty()) {
-            activeScores.average().roundToInt().coerceIn(0, 100)
-        } else 0
 
         val statusLabel = when {
             readinessScore >= 80 -> if (isEn) "Well Prepared" else "Siap"
             readinessScore >= 55 -> if (isEn) "On Track" else "Cukup Terkendali"
-            else -> if (isEn) "Needs Review" else "Perlu Diulas"
+            readinessScore > 0 -> if (isEn) "Needs Review" else "Perlu Diulas"
+            else -> if (isEn) "Not Started (0%)" else "Belum Ada Aktivitas (0%)"
         }
 
         val strengths = mutableListOf<String>()
@@ -815,9 +905,12 @@ object NoteAiAssistant {
             readinessScore = readinessScore,
             statusLabel = statusLabel,
             summaryText = summaryText,
+            scoreReasoningSummary = scoreReasoningSummary,
+            scoreBreakdown = scoreBreakdown,
             noteCoveragePercent = noteCoveragePercent,
             quizMasteryPercent = quizMasteryPercent,
             taskCompletionPercent = taskCompletionPercent,
+            semesterGradePercent = semesterGradePercent,
             currentGpa = currentGpa,
             targetGpa = targetGpa,
             strengths = strengths,

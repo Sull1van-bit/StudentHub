@@ -175,6 +175,7 @@ fun ProfileScreen(
 
         Text(lString("Daftar Mata Kuliah", "Courses"), style = MaterialTheme.typography.titleLarge)
         val activeSem = semester.toIntOrNull() ?: 5
+        val activeCourseSks = courseCredits.toIntOrNull()?.coerceIn(1, 12) ?: 2
         CurriculumCourseDropdown(
             currentSemester = activeSem,
             selectedTitle = courseTitle,
@@ -184,6 +185,10 @@ fun ProfileScreen(
                     courseTitle = c.title
                     courseCredits = c.sks.toString()
                     courseSemester = c.semester.toString()
+                    if (courseStartTime.isNotBlank()) {
+                        val autoEnd = org.umn.application.studenthub.ui.components.defaultEndTimeFor(courseStartTime, c.sks)
+                        if (autoEnd.isNotBlank()) courseEndTime = autoEnd
+                    }
                 } else {
                     courseCode = ""
                     courseTitle = ""
@@ -197,7 +202,15 @@ fun ProfileScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(
                 courseCredits,
-                { courseCredits = it.filter { ch -> ch.isDigit() } },
+                { newVal ->
+                    val cleanDigits = newVal.filter { ch -> ch.isDigit() }
+                    courseCredits = cleanDigits
+                    val parsedSks = cleanDigits.toIntOrNull()
+                    if (parsedSks != null && parsedSks in 1..12 && courseStartTime.isNotBlank()) {
+                        val autoEnd = org.umn.application.studenthub.ui.components.defaultEndTimeFor(courseStartTime, parsedSks)
+                        if (autoEnd.isNotBlank()) courseEndTime = autoEnd
+                    }
+                },
                 Modifier.weight(1f),
                 label = { Text(lString("SKS", "Credits")) },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -212,12 +225,19 @@ fun ProfileScreen(
                 singleLine = true
             )
         }
-        Text(lString("Jadwal Kuliah (Opsional, jam mulai & selesai):", "Class Schedule (Optional, start & end time):"), style = MaterialTheme.typography.labelMedium)
+        Text(
+            lString(
+                "Jadwal Kuliah (Opsional, estimasi selesai: $activeCourseSks SKS = $activeCourseSks jam):",
+                "Class Schedule (Optional, auto-estimated end: $activeCourseSks SKS = $activeCourseSks hrs):"
+            ),
+            style = MaterialTheme.typography.labelMedium
+        )
         org.umn.application.studenthub.ui.components.TimeRangePickerRow(
             startTime = courseStartTime,
             endTime = courseEndTime,
             onStartTimeChange = { courseStartTime = it },
-            onEndTimeChange = { courseEndTime = it }
+            onEndTimeChange = { courseEndTime = it },
+            sks = activeCourseSks
         )
         OutlinedTextField(courseRoom, { courseRoom = it }, Modifier.fillMaxWidth(), label = { Text(lString("Ruangan (opsional)", "Room (optional)")) }, singleLine = true)
         Text(lString("Hari Kuliah (jika ada jadwal):", "Class Day (if scheduled):"), style = MaterialTheme.typography.labelMedium)
@@ -251,10 +271,11 @@ fun ProfileScreen(
                             val daysId = listOf("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
                             val cleanCode = courseCode.trim().uppercase()
                             val cleanTitle = courseTitle.trim()
-                            val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(courseStartTime, courseEndTime)
+                            val sksVal = courseCredits.toIntOrNull() ?: 2
+                            val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(courseStartTime, courseEndTime, sksVal)
                             val normalizedTime = if (combinedTime.isNotBlank()) StudentHubDatabase.normalizeTimeFormat(combinedTime) else ""
                             val hasValidTime = Regex("(?:[01][0-9]|2[0-3])\\.[0-5][0-9](?:–(?:[01][0-9]|2[0-3])\\.[0-5][0-9])?").matches(normalizedTime)
-                            val rangeLabel = if (hasValidTime) org.umn.application.studenthub.ui.dashboard.computeClassTimeRange(normalizedTime) else ""
+                            val rangeLabel = if (hasValidTime) org.umn.application.studenthub.ui.dashboard.computeClassTimeRange(normalizedTime, sksVal) else ""
                             val scheduleLabel = if (hasValidTime) "${daysId[courseDay]}, $rangeLabel" else ""
 
                             db.saveCourse(

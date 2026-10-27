@@ -1116,20 +1116,96 @@ fun StudentProgressAndScheduleSection(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 MetricMiniCard(
-                    label = lString("Catatan", "Notes"),
+                    label = lString("Catatan (35%)", "Notes (35%)"),
                     value = "${assessment.noteCoveragePercent}%",
                     modifier = Modifier.weight(1f)
                 )
                 MetricMiniCard(
-                    label = lString("Latihan", "Practice"),
+                    label = lString("Tugas (35%)", "Tasks (35%)"),
+                    value = "${assessment.taskCompletionPercent}%",
+                    modifier = Modifier.weight(1f)
+                )
+                MetricMiniCard(
+                    label = lString("Latihan (15%)", "Practice (15%)"),
                     value = "${assessment.quizMasteryPercent}%",
                     modifier = Modifier.weight(1f)
                 )
                 MetricMiniCard(
-                    label = lString("Tugas", "Tasks"),
-                    value = "${assessment.taskCompletionPercent}%",
+                    label = lString("Nilai (15%)", "Grades (15%)"),
+                    value = "${assessment.semesterGradePercent}%",
                     modifier = Modifier.weight(1f)
                 )
+            }
+
+            if (assessment.scoreReasoningSummary.isNotBlank() || assessment.scoreBreakdown.isNotEmpty()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = lString(
+                                "Alasan & Rincian Perhitungan Skor (${assessment.readinessScore}%)",
+                                "Score Reasoning & Breakdown (${assessment.readinessScore}%)"
+                            ),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        if (assessment.scoreReasoningSummary.isNotBlank()) {
+                            Text(
+                                text = assessment.scoreReasoningSummary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        assessment.scoreBreakdown.forEach { item ->
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        text = "${item.label} (${item.rawPercent}% × ${item.weightPercent}%)",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = item.detail,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Surface(
+                                    color = if (item.contributionPercent > 0) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHighest
+                                    },
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = "+${item.contributionPercent}%",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (item.contributionPercent > 0) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if (assessment.strengths.isNotEmpty()) {

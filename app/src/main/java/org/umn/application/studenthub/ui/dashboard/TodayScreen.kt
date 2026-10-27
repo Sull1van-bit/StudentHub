@@ -68,14 +68,15 @@ fun extractCourseScheduleDayAndTime(schedule: String): Pair<Int, String>? {
     return matchedDay to computeClassTimeRange(normalizedTime)
 }
 
-fun computeClassTimeRange(timeStr: String): String {
+fun computeClassTimeRange(timeStr: String, sks: Int = 2): String {
     val start = parseTime(timeStr)
     val explicitEnd = parseEndTime(timeStr)
     if (start != null && explicitEnd != null) {
         return String.format("%02d.%02d–%02d.%02d", start.hour, start.minute, explicitEnd.hour, explicitEnd.minute)
     }
     if (start != null) {
-        val endMinutes = (start.hour * 60 + start.minute + 100) % (24 * 60)
+        val durationMinutes = sks.coerceIn(1, 12) * 60
+        val endMinutes = (start.hour * 60 + start.minute + durationMinutes) % (24 * 60)
         val endH = endMinutes / 60
         val endM = endMinutes % 60
         return String.format("%02d.%02d–%02d.%02d", start.hour, start.minute, endH, endM)
@@ -114,7 +115,7 @@ private fun agendaMinuteBounds(timeStr: String): Pair<Int, Int>? {
         val rawEnd = explicitEnd.hour * 60 + explicitEnd.minute
         if (rawEnd > startMins) rawEnd else rawEnd + 24 * 60
     } else {
-        startMins + 100
+        startMins + 120
     }
     return startMins to endMins
 }

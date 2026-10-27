@@ -442,7 +442,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                                             fontWeight = FontWeight.SemiBold
                                         )
                                         val details = buildList {
-                                            add("${days[course.day]}, ${computeClassTimeRange(course.time)}")
+                                            add("${days[course.day]}, ${computeClassTimeRange(course.time, course.sks)}")
                                             if (course.room.isNotBlank()) add("$roomPrefix${course.room}")
                                             if (course.lecturer.isNotBlank()) add(course.lecturer)
                                         }.joinToString(" • ")
@@ -544,7 +544,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
 
                                     courses.forEach { item ->
                                         val normalizedTime = StudentHubDatabase.normalizeTimeFormat(item.time)
-                                        val rangeLabel = computeClassTimeRange(normalizedTime)
+                                        val rangeLabel = computeClassTimeRange(normalizedTime, item.sks)
                                         val scheduleLabel = "${daysId[item.day]}, $rangeLabel"
                                         val courseRow = CourseRow(
                                             id = item.code,
@@ -625,6 +625,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
         var addError by remember { mutableStateOf(false) }
 
         val semInt = semesterText.toIntOrNull() ?: 5
+        val activeSksInt = addSks.toIntOrNull()?.coerceIn(1, 12) ?: 2
         AlertDialog(
             onDismissRequest = { showAddCourseDialog = false },
             title = { Text(lString("Tambah Mata Kuliah & Jadwal", "Add Course & Schedule")) },
@@ -638,6 +639,10 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                                 addCode = c.code
                                 addTitle = c.title
                                 addSks = c.sks.toString()
+                                if (addStartTime.isNotBlank()) {
+                                    val autoEnd = org.umn.application.studenthub.ui.components.defaultEndTimeFor(addStartTime, c.sks)
+                                    if (autoEnd.isNotBlank()) addEndTime = autoEnd
+                                }
                                 addError = false
                             } else {
                                 addCode = ""
@@ -650,18 +655,34 @@ fun OnboardingScreen(onFinished: () -> Unit) {
                     OutlinedTextField(addTitle, { addTitle = it; addError = false }, label = { Text(lString("Nama Mata Kuliah", "Course Name")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(
                         addSks,
-                        { addSks = it.filter { ch -> ch.isDigit() }; addError = false },
+                        { newVal ->
+                            val cleanDigits = newVal.filter { ch -> ch.isDigit() }
+                            addSks = cleanDigits
+                            val parsedSks = cleanDigits.toIntOrNull()
+                            if (parsedSks != null && parsedSks in 1..12 && addStartTime.isNotBlank()) {
+                                val autoEnd = org.umn.application.studenthub.ui.components.defaultEndTimeFor(addStartTime, parsedSks)
+                                if (autoEnd.isNotBlank()) addEndTime = autoEnd
+                            }
+                            addError = false
+                        },
                         label = { Text(lString("Jumlah SKS (1-24)", "Credits / SKS (1-24)")) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
-                    Text(lString("Jam Perkuliahan (Mulai - Selesai):", "Class Hours (Start - End):"), style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        lString(
+                            "Jam Perkuliahan (Estimasi selesai otomatis: $activeSksInt SKS = $activeSksInt jam):",
+                            "Class Hours (Auto-estimated end: $activeSksInt SKS = $activeSksInt hrs):"
+                        ),
+                        style = MaterialTheme.typography.labelMedium
+                    )
                     org.umn.application.studenthub.ui.components.TimeRangePickerRow(
                         startTime = addStartTime,
                         endTime = addEndTime,
                         onStartTimeChange = { addStartTime = it; addError = false },
                         onEndTimeChange = { addEndTime = it; addError = false },
+                        sks = activeSksInt,
                         isError = addError && addStartTime.isBlank()
                     )
                     OutlinedTextField(addRoom, { addRoom = it }, label = { Text(lString("Ruangan (opsional)", "Room (optional)")) }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -692,7 +713,7 @@ fun OnboardingScreen(onFinished: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     val sksNum = addSks.toIntOrNull()
-                    val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(addStartTime, addEndTime)
+                    val combinedTime = org.umn.application.studenthub.ui.components.combineTimeRange(addStartTime, addEndTime, sksNum ?: 2)
                     val normalizedTime = StudentHubDatabase.normalizeTimeFormat(combinedTime)
                     val timeValid = Regex("(?:[01][0-9]|2[0-3])\\.[0-5][0-9](?:–(?:[01][0-9]|2[0-3])\\.[0-5][0-9])?").matches(normalizedTime)
                     if (addCode.isNotBlank() && addTitle.isNotBlank() && sksNum != null && sksNum in 1..24 && timeValid) {
