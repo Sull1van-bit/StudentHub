@@ -514,31 +514,35 @@ fun ScanNoteScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (scannedBody.isNotBlank() && !isExtracting) {
+                        if ((scannedBody.isNotBlank() || previewBitmap != null) && !isExtracting) {
                             TextButton(
                                 onClick = {
                                     isExtracting = true
-                                    statusMessage = if (isEn) "Tidying up note content..." else "Sedang merapikan susunan catatan..."
+                                    statusMessage = if (isEn) "AI is writing your note..." else "AI sedang menuliskan catatan dari materi ini..."
                                     scope.launch {
-                                        val cleaned = DocumentNoteExtractor.cleanAcademicText(scannedBody)
                                         val refined = DocumentNoteExtractor.refineExtractedMaterialWithAi(
-                                            rawCleanedText = cleaned,
+                                            rawCleanedText = scannedBody,
                                             titleHint = customTitle.ifBlank { defaultCourseName },
                                             courseHint = defaultCourseName,
-                                            sourceMode = activeScanMode
+                                            sourceMode = activeScanMode,
+                                            previewBitmap = previewBitmap
                                         )
-                                        scannedBody = refined.ifBlank { cleaned }
-                                        if (customTitle.isBlank()) {
-                                            customTitle = DocumentNoteExtractor.suggestCleanTitle(scannedBody, defaultCourseName)
+                                        if (refined.isNotBlank()) {
+                                            scannedBody = refined
+                                            if (customTitle.isBlank()) {
+                                                customTitle = DocumentNoteExtractor.suggestCleanTitle(scannedBody, defaultCourseName)
+                                            }
+                                            statusMessage = if (isEn) "Note written by AI." else "Catatan sudah ditulis ulang oleh AI."
+                                        } else {
+                                            statusMessage = if (isEn) "Couldn't write note with AI right now." else "AI belum berhasil menuliskan catatan saat ini."
                                         }
                                         isExtracting = false
-                                        statusMessage = if (isEn) "Note content tidied up." else "Susunan catatan sudah dirapikan."
                                     }
                                 }
                             ) {
                                 Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text(lString("Rapikan", "Tidy Up"))
+                                Text(lString("Tulis dengan AI", "Write with AI"))
                             }
                         }
                         if (scannedBody.isNotBlank() || previewBitmap != null) {

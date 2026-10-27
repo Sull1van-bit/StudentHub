@@ -626,27 +626,35 @@ fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> 
                 TextButton(
                     onClick = {
                         isImporting = true
-                        importNotice = if (isEn) "Tidying up note..." else "Merapikan isi catatan..."
+                        importNotice = if (isEn) "AI is writing your note..." else "AI sedang menuliskan catatan materi..."
                         scope.launch {
                             val matchedCourseTitle = dbCourses.firstOrNull { it.code.equals(course, ignoreCase = true) }?.title ?: course
-                            val cleaned = DocumentNoteExtractor.cleanAcademicText(body)
-                            val refined = DocumentNoteExtractor.refineExtractedMaterialWithAi(
-                                rawCleanedText = cleaned,
-                                titleHint = title.ifBlank { matchedCourseTitle },
+                            val aiDraft = NoteAiAssistant.writeNoteWithAi(
+                                rawSourceText = body,
+                                fallbackTitle = title.ifBlank { matchedCourseTitle },
                                 courseHint = matchedCourseTitle
                             )
-                            body = refined.ifBlank { cleaned }
-                            if (title.isBlank()) {
-                                title = DocumentNoteExtractor.suggestCleanTitle(body, matchedCourseTitle)
+                            if (aiDraft != null && aiDraft.body.isNotBlank()) {
+                                body = aiDraft.body
+                                if (title.isBlank() || title.equals(matchedCourseTitle, ignoreCase = true)) {
+                                    title = aiDraft.title
+                                }
+                                importNotice = if (isEn) "Note written by AI." else "Catatan sudah ditulis ulang oleh AI."
+                            } else {
+                                val err = NoteAiAssistant.lastRemoteError
+                                importNotice = if (!err.isNullOrBlank()) {
+                                    if (isEn) "AI note writing unavailable ($err)." else "AI belum bisa menulis catatan ($err)."
+                                } else {
+                                    if (isEn) "Couldn't reach AI right now." else "AI belum merespons saat ini."
+                                }
                             }
                             isImporting = false
-                            importNotice = if (isEn) "Note tidied up." else "Isi catatan sudah dirapikan."
                         }
                     }
                 ) {
                     Icon(Icons.Default.AutoFixHigh, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text(lString("Rapikan", "Tidy Up"))
+                    Text(lString("Tulis dengan AI", "Write with AI"))
                 }
             }
             Spacer(Modifier.weight(1f))

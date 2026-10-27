@@ -133,6 +133,10 @@ object NoteAiAssistant {
         RegexOption.IGNORE_CASE
     )
 
+    @Volatile
+    var lastRemoteError: String? = null
+        private set
+
     fun isRemoteApiConfigured(): Boolean = BuildConfig.AI_API_KEY.isNotBlank()
 
     private fun redactSecrets(raw: String): String {
@@ -150,142 +154,263 @@ object NoteAiAssistant {
 
     /**
      * Calls developer-configured HTTPS AI endpoint using header authentication only.
-     * Returns null silently on network/config absence so the caller falls back to local synthesis.
+     * Automatically adapts max_tokens if the gateway rejects high token reservations (HTTP 429 quota_exceeded).
      */
     suspend fun requestRemoteCompletion(
         systemPrompt: String,
-        userPrompt: String
+        userPrompt: String,
+        preferredMaxTokens: Int = 550,
+        base64JpegImage: String? = null
     ): String? = withContext(Dispatchers.IO) {
         val apiKey = BuildConfig.AI_API_KEY.trim()
         val baseUrl = BuildConfig.AI_BASE_URL.trim().trimEnd('/')
-        val model = BuildConfig.AI_MODEL.trim().ifBlank { "gemini-2.5-flash" }
+        val model = BuildConfig.AI_MODEL.trim().ifBlank { "gpt-5.4-mini" }
         if (apiKey.isBlank() || !baseUrl.startsWith("https://", ignoreCase = true)) {
             return@withContext null
         }
 
-        runCatching {
-            val isGeminiNative = baseUrl.contains("generativelanguage.googleapis.com", ignoreCase = true)
-            val endpoint = if (isGeminiNative) {
-                "$baseUrl/models/$model:generateContent"
-            } else {
-                "$baseUrl/chat/completions"
+        val isGeminiNative = baseUrl.contains("generativelanguage.googleapis.com", ignoreCase = true)
+        val tokenBudgets = listOf(preferredMaxTokens, 320, 190, 120, 80)
+            .filter { it <= preferredMaxTokens }
+            .distinct()
+
+        for ((attemptIdx, maxTok) in tokenBudgets.withIndex()) {
+            val promptLimit = when {
+                maxTok >= 400 -> 7500
+                maxTok >= 250 -> 4500
+                maxTok >= 150 -> 2600
+                else -> 1500
             }
-            val url = URI(endpoint).toURL()
-            val conn = (url.openConnection() as HttpsURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 10_000
-                readTimeout = 18_000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                if (isGeminiNative) {
-                    setRequestProperty("x-goog-api-key", apiKey)
+            val clippedUserPrompt = userPrompt.take(promptLimit)
+            val includeImage = base64JpegImage != null && attemptIdx <= 1
+
+            val attemptResult = runCatching {
+                val endpoint = if (isGeminiNative) {
+                    "$baseUrl/models/$model:generateContent"
                 } else {
-                    setRequestProperty("Authorization", "Bearer $apiKey")
+                    "$baseUrl/chat/completions"
+                }
+                val url = URI(endpoint).toURL()
+                val conn = (url.openConnection() as HttpsURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 12_000
+                    readTimeout = 24_000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    if (isGeminiNative) {
+                        setRequestProperty("x-goog-api-key", apiKey)
+                    } else {
+                        setRequestProperty("Authorization", "Bearer $apiKey")
+                    }
+                }
+
+                val payloadJson = if (isGeminiNative) {
+                    JSONObject().apply {
+                        put("systemInstruction", JSONObject().apply {
+                            put("parts", JSONArray().put(JSONObject().put("text", systemPrompt)))
+                        })
+                        val userParts = JSONArray().apply {
+                            put(JSONObject().put("text", clippedUserPrompt))
+                            if (includeImage && !base64JpegImage.isNullOrBlank()) {
+                                put(JSONObject().put("inlineData", JSONObject().apply {
+                                    put("mimeType", "image/jpeg")
+                                    put("data", base64JpegImage)
+                                }))
+                            }
+                        }
+                        put("contents", JSONArray().put(JSONObject().apply {
+                            put("role", "user")
+                            put("parts", userParts)
+                        }))
+                        put("generationConfig", JSONObject().apply {
+                            put("temperature", 0.25)
+                            put("maxOutputTokens", maxTok)
+                        })
+                    }.toString()
+                } else {
+                    JSONObject().apply {
+                        put("model", model)
+                        put("max_tokens", maxTok)
+                        put("temperature", 0.25)
+                        put("messages", JSONArray().apply {
+                            put(JSONObject().put("role", "system").put("content", systemPrompt))
+                            if (includeImage && !base64JpegImage.isNullOrBlank()) {
+                                val contentArr = JSONArray().apply {
+                                    put(JSONObject().put("type", "text").put("text", clippedUserPrompt))
+                                    put(JSONObject().apply {
+                                        put("type", "image_url")
+                                        put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$base64JpegImage"))
+                                    })
+                                }
+                                put(JSONObject().put("role", "user").put("content", contentArr))
+                            } else {
+                                put(JSONObject().put("role", "user").put("content", clippedUserPrompt))
+                            }
+                        })
+                    }.toString()
+                }
+
+                OutputStreamWriter(conn.outputStream, StandardCharsets.UTF_8).use { writer ->
+                    writer.write(payloadJson)
+                    writer.flush()
+                }
+
+                val status = conn.responseCode
+                if (status !in 200..299) {
+                    val errText = runCatching {
+                        conn.errorStream?.let { es ->
+                            BufferedReader(InputStreamReader(es, StandardCharsets.UTF_8)).use { it.readText() }
+                        }.orEmpty()
+                    }.getOrDefault("")
+                    conn.disconnect()
+                    return@runCatching Pair<String?, Int>(errText, status)
+                }
+
+                val responseText = BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)).use {
+                    it.readText()
+                }
+                conn.disconnect()
+
+                val root = JSONObject(responseText)
+                val extracted = if (isGeminiNative) {
+                    root.optJSONArray("candidates")
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("content")
+                        ?.optJSONArray("parts")
+                        ?.optJSONObject(0)
+                        ?.optString("text")
+                } else {
+                    root.optJSONArray("choices")
+                        ?.optJSONObject(0)
+                        ?.optJSONObject("message")
+                        ?.optString("content")
+                }
+                val clean = extracted?.let { redactSecrets(it).trim() }?.takeIf { it.isNotBlank() }
+                Pair(clean, status)
+            }.getOrNull()
+
+            if (attemptResult != null) {
+                val (bodyOrErr, status) = attemptResult
+                if (status in 200..299 && !bodyOrErr.isNullOrBlank()) {
+                    lastRemoteError = null
+                    return@withContext bodyOrErr
+                }
+                if (status == 429 || status == 402) {
+                    lastRemoteError = "Kuota/saldo API terbatas (HTTP $status). Mencoba menyesuaikan ukuran respons..."
+                    kotlinx.coroutines.delay(950L)
+                    continue
+                } else {
+                    lastRemoteError = "Gagal menghubungi AI (HTTP $status)"
+                    break
                 }
             }
+        }
 
-            val payloadJson = if (isGeminiNative) {
-                JSONObject().apply {
-                    put("systemInstruction", JSONObject().apply {
-                        put("parts", JSONArray().put(JSONObject().put("text", systemPrompt)))
-                    })
-                    put("contents", JSONArray().put(JSONObject().apply {
-                        put("role", "user")
-                        put("parts", JSONArray().put(JSONObject().put("text", userPrompt)))
-                    }))
-                    put("generationConfig", JSONObject().apply {
-                        put("temperature", 0.3)
-                        put("maxOutputTokens", 1024)
-                    })
-                }.toString()
-            } else {
-                JSONObject().apply {
-                    put("model", model)
-                    put("max_tokens", 700)
-                    put("temperature", 0.3)
-                    put("messages", JSONArray().apply {
-                        put(JSONObject().put("role", "system").put("content", systemPrompt))
-                        put(JSONObject().put("role", "user").put("content", userPrompt))
-                    })
-                }.toString()
-            }
-
-            OutputStreamWriter(conn.outputStream, StandardCharsets.UTF_8).use { writer ->
-                writer.write(payloadJson)
-                writer.flush()
-            }
-
-            val status = conn.responseCode
-            if (status !in 200..299) {
-                conn.disconnect()
-                return@runCatching null
-            }
-
-            val responseText = BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)).use {
-                it.readText()
-            }
-            conn.disconnect()
-
-            val root = JSONObject(responseText)
-            val extracted = if (isGeminiNative) {
-                root.optJSONArray("candidates")
-                    ?.optJSONObject(0)
-                    ?.optJSONObject("content")
-                    ?.optJSONArray("parts")
-                    ?.optJSONObject(0)
-                    ?.optString("text")
-            } else {
-                root.optJSONArray("choices")
-                    ?.optJSONObject(0)
-                    ?.optJSONObject("message")
-                    ?.optString("content")
-            }
-            extracted?.let { redactSecrets(it).trim() }?.takeIf { it.isNotBlank() }
-        }.getOrNull()
+        if (lastRemoteError != null && lastRemoteError!!.contains("429")) {
+            lastRemoteError = "Saldo TokenGateway saat ini tidak cukup untuk memproses teks penuh (HTTP 429: Saldo tersedia tidak cukup)."
+        }
+        null
     }
 
-    private fun scoreInstructionalSentence(sentence: String): Int {
-        var score = 0
-        if (INSTRUCTIONAL_SIGNAL_REGEX.containsMatchIn(sentence)) score += 4
-        if (sentence.contains(":")) score += 1
-        if (sentence.length in 35..220) score += 2
-        if (ADMIN_SENTENCE_NOISE_REGEX.containsMatchIn(sentence)) score -= 10
-        return score
+    data class AiNoteDraft(
+        val title: String,
+        val body: String
+    )
+
+    /**
+     * AI-First Note Writer:
+     * Directly asks the AI to write a structured, clean student lecture note from raw document/OCR text
+     * (and optional photo of whiteboard/handwriting), returning AiNoteDraft(title, body).
+     */
+    suspend fun writeNoteWithAi(
+        rawSourceText: String,
+        fallbackTitle: String,
+        courseHint: String = "",
+        sourceMode: ScanSourceMode = ScanSourceMode.DOCUMENT,
+        base64JpegImage: String? = null
+    ): AiNoteDraft? {
+        if (!isRemoteApiConfigured()) return null
+        if (rawSourceText.isBlank() && base64JpegImage.isNullOrBlank()) return null
+
+        val sysPrompt = when (sourceMode) {
+            ScanSourceMode.WHITEBOARD -> {
+                "Kamu adalah asisten pencatat kuliah mahasiswa. Tugasmu adalah menulis catatan kuliah yang rapi, jelas, dan mudah dipelajari dari foto/teks papan tulis kelas ini.\n" +
+                    "Aturan wajib:\n" +
+                    "1. Baris pertama WAJIB ditulis dengan format: JUDUL: <Judul Topik Materi>\n" +
+                    "2. Di bawahnya, tulis langsung isi catatan yang terdiri dari penjelasan konsep utama, poin-poin penting, rumus atau tahapan yang ada di papan tulis.\n" +
+                    "3. Jangan gunakan kalimat pembuka basa-basi (seperti 'Berikut adalah...') dan jangan gunakan karakter em dash."
+            }
+            ScanSourceMode.HANDWRITING -> {
+                "Kamu adalah asisten pencatat kuliah mahasiswa. Tugasmu adalah menulis ulang catatan tulis tangan mahasiswa ini menjadi catatan digital yang rapi, terstruktur, dan enak dibaca ulang.\n" +
+                    "Aturan wajib:\n" +
+                    "1. Baris pertama WAJIB ditulis dengan format: JUDUL: <Judul Topik Materi>\n" +
+                    "2. Di bawahnya, susun materi menjadi paragraf singkat dan poin-poin jelas sesuai isi catatan.\n" +
+                    "3. Jangan gunakan kalimat pembuka basa-basi dan jangan gunakan karakter em dash."
+            }
+            ScanSourceMode.DOCUMENT -> {
+                "Kamu adalah asisten pencatat kuliah mahasiswa. Tugasmu adalah membaca teks dokumen/PDF kuliah berikut lalu MENULIS ULANG catatan materi kuliah yang rapi dan mudah dipelajari.\n" +
+                    "Aturan wajib:\n" +
+                    "1. Baris pertama WAJIB ditulis dengan format: JUDUL: <Judul Topik Materi Kuliah>\n" +
+                    "2. Fokus 100% pada substansi ilmu/pelajarannya (pengertian, konsep inti, cara kerja, rumus/langkah, dan contoh).\n" +
+                    "3. JANGAN PERNAH mencatat bagian administrasi dokumen seperti nama kampus/universitas, fakultas, penerbit, jadwal ditulis/revisi, kode dokumen, tabel RPS, nama dosen, atau daftar pustaka.\n" +
+                    "4. Jangan gunakan pembuka basa-basi dan jangan gunakan karakter em dash."
+            }
+        }
+
+        val userPrompt = buildString {
+            if (courseHint.isNotBlank()) appendLine("Mata Kuliah: $courseHint")
+            if (fallbackTitle.isNotBlank()) appendLine("Nama File/Sumber: $fallbackTitle")
+            if (rawSourceText.isNotBlank()) {
+                appendLine("\nIsi Teks Dokumen/Hasil Bacaan:\n${rawSourceText.take(6500)}")
+            } else {
+                appendLine("\nBaca langsung tulisan pada gambar terlampir dan tuliskan catatannya.")
+            }
+        }
+
+        val aiResponse = requestRemoteCompletion(
+            systemPrompt = sysPrompt,
+            userPrompt = userPrompt,
+            preferredMaxTokens = 550,
+            base64JpegImage = base64JpegImage
+        ) ?: return null
+
+        val lines = aiResponse.lines()
+        var extractedTitle = ""
+        val bodyLines = mutableListOf<String>()
+
+        for (line in lines) {
+            val trimmed = line.trim()
+            if (extractedTitle.isBlank() && (trimmed.startsWith("JUDUL:", ignoreCase = true) || trimmed.startsWith("TITLE:", ignoreCase = true))) {
+                extractedTitle = trimmed.substringAfter(":").trim().removeSurrounding("\"").removePrefix("#").trim()
+            } else if (extractedTitle.isBlank() && bodyLines.isEmpty() && trimmed.startsWith("# ")) {
+                extractedTitle = trimmed.removePrefix("# ").trim()
+            } else {
+                bodyLines.add(line)
+            }
+        }
+
+        val finalBody = bodyLines.joinToString("\n").trim().ifBlank { aiResponse.trim() }
+        val finalTitle = extractedTitle.ifBlank { fallbackTitle.ifBlank { "Catatan Kuliah" } }
+        return AiNoteDraft(title = finalTitle, body = finalBody)
     }
 
     private fun extractCleanSentences(body: String): List<String> {
         if (body.isBlank()) return emptyList()
-        val cleanedBody = DocumentNoteExtractor.cleanAcademicText(body)
-        val rawCandidates = cleanedBody
+        return body
             .replace(Regex("[*_#>`~]"), "")
             .split(Regex("(?<=[.!?])\\s+|\\n+"))
             .map { it.trim().removePrefix("•").removePrefix("-").trim().replace("—", ", ").replace("–", "-") }
             .filter { it.length >= 14 && it.count { ch -> ch.isLetter() } >= 8 }
             .distinct()
-
-        val filtered = rawCandidates.filterNot { candidate ->
-            DocumentNoteExtractor.isAdministrativeNoiseLine(candidate) ||
-                ADMIN_SENTENCE_NOISE_REGEX.containsMatchIn(candidate)
-        }
-
-        val pool = if (filtered.isNotEmpty()) filtered else rawCandidates
-        // Prioritize sentences that explain concepts/definitions while preserving relative order among equal scores
-        val withIndex = pool.withIndex().sortedWith(
-            compareByDescending<IndexedValue<String>> { scoreInstructionalSentence(it.value) }
-                .thenBy { it.index }
-        )
-        return withIndex.map { it.value }
     }
 
     private fun extractGlossary(body: String, sentences: List<String>): List<Pair<String, String>> {
         if (sentences.isEmpty()) return emptyList()
         val pairs = mutableListOf<Pair<String, String>>()
-        val cleanedBody = DocumentNoteExtractor.cleanAcademicText(body)
-        val lines = cleanedBody.lines().map { it.trim().removePrefix("•").removePrefix("-").trim() }
+        val lines = body.lines().map { it.trim().removePrefix("•").removePrefix("-").trim() }
         val defRegex = Regex("^([A-Za-z0-9 /()_-]{3,40})\\s*(?::|=|\\badalah\\b|\\bmerupakan\\b|\\bis\\b|\\brefers to\\b)\\s*(.{12,200})$", RegexOption.IGNORE_CASE)
 
         for (line in lines) {
-            if (DocumentNoteExtractor.isAdministrativeNoiseLine(line) || ADMIN_SENTENCE_NOISE_REGEX.containsMatchIn(line)) continue
             val m = defRegex.find(line)
             if (m != null) {
                 val term = m.groupValues[1].replace(Regex("[*_]"), "").trim()
@@ -294,7 +419,6 @@ object NoteAiAssistant {
                 if (term.isNotBlank() &&
                     def.isNotBlank() &&
                     termLower !in STOP_WORDS &&
-                    !DocumentNoteExtractor.isAdministrativeNoiseLine("$term: $def") &&
                     pairs.none { it.first.equals(term, true) }
                 ) {
                     pairs.add(term to def)
@@ -302,29 +426,6 @@ object NoteAiAssistant {
             }
             if (pairs.size >= 5) break
         }
-
-        if (pairs.size < 3) {
-            val words = sentences.joinToString(" ")
-                .replace(Regex("[^A-Za-z0-9\\s]"), " ")
-                .split(Regex("\\s+"))
-                .filter { it.length >= 5 && it.lowercase() !in STOP_WORDS && it.all { ch -> ch.isLetter() } }
-                .groupingBy { it.lowercase() }
-                .eachCount()
-                .entries
-                .sortedByDescending { it.value }
-                .map { it.key }
-
-            for (w in words) {
-                if (pairs.size >= 4) break
-                if (pairs.any { it.first.equals(w, true) }) continue
-                val contextSentence = sentences.firstOrNull { it.contains(w, ignoreCase = true) }
-                if (contextSentence != null) {
-                    val displayTerm = w.replaceFirstChar { it.uppercase() }
-                    pairs.add(displayTerm to contextSentence.take(150))
-                }
-            }
-        }
-
         return pairs
     }
 
@@ -352,8 +453,7 @@ object NoteAiAssistant {
         isEn: Boolean,
         fallback: NoteSummary
     ): NoteSummary {
-        val cleanedAcademic = DocumentNoteExtractor.cleanAcademicText(body)
-        val cleanBody = sanitizeInput(cleanedAcademic.ifBlank { body }, 8_000)
+        val cleanBody = sanitizeInput(body, 6_500)
         if (!isRemoteApiConfigured() || cleanBody.length < 20) return fallback
         val cleanTitle = sanitizeInput(title, 150).ifBlank { if (isEn) "Class Note" else "Catatan Kuliah" }
         val sysPrompt = if (isEn) {
@@ -365,7 +465,7 @@ object NoteAiAssistant {
                 "ABAIKAN sama sekali informasi administrasi dokumen seperti nama kampus/universitas, penerbit, jadwal ditulis/revisi, kode dokumen, tabel RPS, atau nama penyusun. " +
                 "Tulis 1 paragraf ringkasan yang mudah dipahami mahasiswa di baris pertama, lalu 3-4 baris diawali 'POIN: ' untuk poin materi penting, lalu 2-3 baris diawali 'ISTILAH: nama istilah | penjelasan singkat'. Jangan gunakan karakter em dash."
         }
-        val raw = requestRemoteCompletion(sysPrompt, "Topik: $cleanTitle\nIsi Materi:\n$cleanBody") ?: return fallback
+        val raw = requestRemoteCompletion(sysPrompt, "Topik: $cleanTitle\nIsi Materi:\n$cleanBody", preferredMaxTokens = 320) ?: return fallback
         val lines = raw.lines().map { it.trim() }.filter { it.isNotBlank() }
         val points = mutableListOf<String>()
         val terms = mutableListOf<Pair<String, String>>()
@@ -394,6 +494,45 @@ object NoteAiAssistant {
         val finalPoints = if (points.isNotEmpty()) points else fallback.keyPoints
         val finalTerms = if (terms.isNotEmpty()) terms else fallback.glossaryTerms
         return NoteSummary(overview = finalOverview, keyPoints = finalPoints, glossaryTerms = finalTerms)
+    }
+
+    suspend fun enrichQuizRemote(
+        title: String,
+        body: String,
+        isEn: Boolean,
+        fallback: StudyQuiz
+    ): StudyQuiz {
+        val cleanBody = sanitizeInput(body, 5_000)
+        if (!isRemoteApiConfigured() || cleanBody.length < 25) return fallback
+        val cleanTitle = sanitizeInput(title, 120).ifBlank { if (isEn) "Class Note" else "Catatan Kuliah" }
+        val sysPrompt = if (isEn) {
+            "Create 4 study flashcards based strictly on the core course concepts in this note (ignore any university/publisher/schedule metadata). " +
+                "Format each line strictly as: Q: <question> | A: <concise answer>"
+        } else {
+            "Buat 4 kartu kuis latihan ujian berdasarkan konsep inti materi kuliah di catatan ini (abaikan nama kampus, penerbit, atau jadwal dokumen). " +
+                "Tulis tiap baris dengan format persis: Q: <pertanyaan konsep> | A: <jawaban singkat & jelas>"
+        }
+        val raw = requestRemoteCompletion(sysPrompt, "Topik: $cleanTitle\nMateri:\n$cleanBody", preferredMaxTokens = 260) ?: return fallback
+        val parsed = mutableListOf<QuizQuestion>()
+        raw.lines().forEachIndexed { idx, line ->
+            val trimmed = line.trim().removePrefix("-").removePrefix("•").trim()
+            if (trimmed.startsWith("Q:", ignoreCase = true) && trimmed.contains("|")) {
+                val parts = trimmed.split("|", limit = 2)
+                val q = parts[0].substringAfter(":").trim()
+                val a = parts[1].substringAfter(":").trim()
+                if (q.isNotBlank() && a.isNotBlank()) {
+                    parsed.add(
+                        QuizQuestion(
+                            id = "ai-q-$idx",
+                            question = q,
+                            answer = a,
+                            explanation = if (isEn) "Core concept from $cleanTitle" else "Konsep inti dari $cleanTitle"
+                        )
+                    )
+                }
+            }
+        }
+        return if (parsed.isNotEmpty()) StudyQuiz(parsed) else fallback
     }
 
     fun generateStudyGuide(title: String, body: String, isEn: Boolean): StudyGuide {
@@ -495,7 +634,7 @@ object NoteAiAssistant {
         return StudyQuiz(questions = questions.distinctBy { it.answer }.take(6))
     }
 
-    fun generateCanvasData(title: String, body: String, isEn: Boolean): CanvasStudyData {
+    fun generateCanvasData(title: String, body: String, isEn: Boolean, aiSummary: NoteSummary? = null): CanvasStudyData {
         val cleanTitle = title.trim().ifBlank { if (isEn) "Study Topic" else "Topik Belajar" }
         val sentences = extractCleanSentences(body)
         if (sentences.isEmpty()) {
@@ -509,12 +648,22 @@ object NoteAiAssistant {
             )
         }
 
-        val glossary = extractGlossary(body, sentences)
+        val glossary = if (aiSummary != null && aiSummary.glossaryTerms.isNotEmpty()) {
+            aiSummary.glossaryTerms
+        } else {
+            extractGlossary(body, sentences)
+        }
+        val keySentences = if (aiSummary != null && aiSummary.keyPoints.isNotEmpty()) {
+            aiSummary.keyPoints
+        } else {
+            sentences
+        }
+
         val rawNodeItems = mutableListOf<Triple<String, String, String>>()
         glossary.forEach { (term, def) ->
             rawNodeItems.add(Triple(term.take(22), def, "$term: $def"))
         }
-        sentences.forEach { s ->
+        keySentences.forEach { s ->
             if (rawNodeItems.size < 6) {
                 val cleanWords = s.split(" ")
                     .map { it.replace(Regex("[^A-Za-z0-9-]"), "") }
@@ -557,10 +706,10 @@ object NoteAiAssistant {
             }
         } else ""
 
-        val eli5Text = sentences.take(2).joinToString(" ")
+        val eli5Text = aiSummary?.overview?.takeIf { it.isNotBlank() } ?: keySentences.take(2).joinToString(" ")
 
-        val caseStudyText = if (sentences.size >= 3) {
-            sentences.drop(2).take(2).joinToString(" ")
+        val caseStudyText = if (keySentences.size >= 3) {
+            keySentences.drop(2).take(2).joinToString(" ")
         } else {
             rawNodeItems.joinToString("\n") { "• ${it.first}: ${it.second}" }
         }

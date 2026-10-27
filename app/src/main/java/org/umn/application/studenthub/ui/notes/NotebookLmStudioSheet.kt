@@ -73,19 +73,20 @@ fun NotebookLmStudioSheet(
     var summary by remember(noteTitle, noteBody, isEn) {
         mutableStateOf(NoteAiAssistant.generateSummary(noteTitle, noteBody, isEn))
     }
+    var quiz by remember(noteTitle, noteBody, isEn) {
+        mutableStateOf(NoteAiAssistant.generateQuiz(noteTitle, noteBody, isEn))
+    }
     LaunchedEffect(noteTitle, noteBody, isEn) {
         if (noteBody.isNotBlank()) {
             summary = NoteAiAssistant.enrichSummaryRemote(noteTitle, noteBody, isEn, summary)
+            quiz = NoteAiAssistant.enrichQuizRemote(noteTitle, noteBody, isEn, quiz)
         }
     }
     val studyGuide = remember(noteTitle, noteBody, isEn) {
         NoteAiAssistant.generateStudyGuide(noteTitle, noteBody, isEn)
     }
-    val quiz = remember(noteTitle, noteBody, isEn) {
-        NoteAiAssistant.generateQuiz(noteTitle, noteBody, isEn)
-    }
-    val canvasData = remember(noteTitle, noteBody, isEn) {
-        NoteAiAssistant.generateCanvasData(noteTitle, noteBody, isEn)
+    val canvasData = remember(noteTitle, noteBody, isEn, summary) {
+        NoteAiAssistant.generateCanvasData(noteTitle, noteBody, isEn, aiSummary = summary)
     }
 
     var savedProgress by remember(effectiveNoteKey) {
