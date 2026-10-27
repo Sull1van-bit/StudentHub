@@ -132,15 +132,15 @@ fun StudentHubApp(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                lString("Menu Navigasi Utama", "Main Navigation Menu"),
+                                lString("Teman kuliah harianmu", "Your daily campus companion"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
 
                         Text(
-                            lString("PERKULIAHAN & EVALUASI", "ACADEMICS & EVALUATION"),
-                            style = MaterialTheme.typography.labelSmall,
+                            lString("Kuliah", "Academics"),
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)
@@ -148,17 +148,17 @@ fun StudentHubApp(
                         val academicDrawerItems = listOf(
                             Triple(
                                 lString("Mata Kuliah & Tugas", "Courses & Tasks"),
-                                lString("Daftar matkul, SKS & tenggat tugas", "Courses, credits & task deadlines"),
+                                lString("Daftar kelas, SKS, dan tenggat tugas", "Classes, credits, and task deadlines"),
                                 Screen.Academic
                             ),
                             Triple(
-                                lString("Nilai & Target IPK", "Grades & GPA Target"),
-                                lString("IPS semester, IPK & nilai huruf", "Term GPA, cumulative GPA & grades"),
+                                lString("Nilai & Hitung IPK", "Grades & GPA"),
+                                lString("IPS semester ini, IPK, dan target nilai", "Term GPA, cumulative GPA, and target"),
                                 Screen.Grades
                             ),
                             Triple(
-                                lString("Rencana & Progres Belajar", "Study Plan & Progress"),
-                                lString("Skor kesiapan & rekomendasi waktu belajar", "Readiness score & study schedule"),
+                                lString("Target & Kesiapan Belajar", "Study Readiness"),
+                                lString("Cek kesiapan ujian dan saran jam belajar", "Exam readiness and suggested study times"),
                                 Screen.Learning
                             )
                         )
@@ -191,21 +191,21 @@ fun StudentHubApp(
                         HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
 
                         Text(
-                            lString("CATATAN & DOKUMEN", "NOTES & DOCUMENTS"),
-                            style = MaterialTheme.typography.labelSmall,
+                            lString("Catatan", "Notes"),
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)
                         )
                         val noteDrawerItems = listOf(
                             Triple(
-                                lString("Buku Catatan & Studio AI", "Notebook & AI Studio"),
-                                lString("Catatan, rangkuman, kanvas & kuis", "Notes, summary, canvas & quiz"),
+                                lString("Catatan Kuliah", "Class Notes"),
+                                lString("Tulis materi, masukkan PDF, atau latihan kuis", "Write notes, import PDFs, or practice quizzes"),
                                 Screen.Notes
                             ),
                             Triple(
-                                lString("Pindai Kamera & Impor PDF", "Camera Scan & PDF Import"),
-                                lString("OCR foto catatan & unggah file PDF", "Photo OCR & upload PDF files"),
+                                lString("Foto Papan Tulis & Catatan", "Photo Whiteboard & Notes"),
+                                lString("Foto papan tulis kelas, buku tulis, atau modul", "Photograph whiteboards, notebooks, or handouts"),
                                 Screen.ScanNote
                             )
                         )
@@ -238,8 +238,8 @@ fun StudentHubApp(
                         HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
 
                         Text(
-                            lString("KEUANGAN & PENGATURAN", "FINANCE & SETTINGS"),
-                            style = MaterialTheme.typography.labelSmall,
+                            lString("Lainnya", "More"),
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)
@@ -247,8 +247,8 @@ fun StudentHubApp(
                         NavigationDrawerItem(
                             label = {
                                 Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                                    Text(lString("Keuangan & Anggaran", "Finances & Budget"), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                                    Text(lString("Pemasukan, pengeluaran & saldo", "Income, expenses & balance"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(lString("Uang Saku & Pengeluaran", "Allowance & Expenses"), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                                    Text(lString("Catat pemasukan, pengeluaran, dan sisa saldo", "Track income, spending, and balance"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             },
                             icon = { Icon(Screen.Finance.icon, contentDescription = null) },
@@ -270,8 +270,8 @@ fun StudentHubApp(
                         NavigationDrawerItem(
                             label = {
                                 Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                                    Text(lString("Profil & Pengaturan", "Profile & Settings"), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                                    Text(lString("Data mahasiswa, tema & bahasa", "Student profile, theme & language"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(lString("Profil & Tampilan", "Profile & Appearance"), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                                    Text(lString("Data diri, semester, tema gelap, dan bahasa", "Profile info, semester, dark mode, and language"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             },
                             icon = { Icon(Screen.Profile.icon, contentDescription = null) },
@@ -291,7 +291,7 @@ fun StudentHubApp(
                                 .testTag("drawer-profile")
                         )
                         NavigationDrawerItem(
-                            label = { Text(lString("Ulangi Setup Awal (Reset)", "Restart Initial Setup (Reset)")) },
+                            label = { Text(lString("Mulai Ulang dari Awal (Reset)", "Start Over (Reset Data)")) },
                             icon = { Icon(Screen.More.icon, contentDescription = null) },
                             selected = currentBaseRoute == "onboarding",
                             onClick = {
@@ -334,14 +334,14 @@ fun StudentHubApp(
                                             "home" -> "StudentHub"
                                             "schedule" -> lString("Jadwal & Kalender", "Schedule & Calendar")
                                             "academic" -> lString("Mata Kuliah & Tugas", "Courses & Tasks")
-                                            "notes" -> lString("Buku Catatan & Studio AI", "Notebook & AI Studio")
-                                            "scan_note" -> lString("Pindai & Impor PDF", "Scan & Import PDF")
-                                            "finance" -> lString("Keuangan & Anggaran", "Finances & Budget")
-                                            "grades" -> lString("Nilai & Target IPK", "Grades & GPA Target")
-                                            "learning" -> lString("Rencana & Progres Belajar", "Study Plan & Progress")
+                                            "notes" -> lString("Catatan Kuliah", "Class Notes")
+                                            "scan_note" -> lString("Foto Papan Tulis & Catatan", "Photo Whiteboard & Notes")
+                                            "finance" -> lString("Uang Saku & Pengeluaran", "Allowance & Expenses")
+                                            "grades" -> lString("Nilai & Hitung IPK", "Grades & GPA")
+                                            "learning" -> lString("Target & Kesiapan Belajar", "Study Readiness")
                                             "course" -> lString("Detail Mata Kuliah", "Course Details")
-                                            "editor" -> lString("Editor Catatan", "Note Editor")
-                                            "profile" -> lString("Profil & Pengaturan", "Profile & Settings")
+                                            "editor" -> lString("Tulis Catatan", "Edit Note")
+                                            "profile" -> lString("Profil & Tampilan", "Profile & Appearance")
                                             else -> "StudentHub"
                                         }
                                     )

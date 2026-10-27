@@ -116,7 +116,21 @@ object NoteAiAssistant {
         "yang", "dan", "di", "ke", "dari", "ini", "itu", "dengan", "untuk", "pada", "adalah",
         "sebagai", "dalam", "atau", "juga", "akan", "oleh", "karena", "bisa", "dapat", "tidak",
         "the", "and", "for", "with", "that", "this", "from", "are", "was", "were", "have", "has",
-        "not", "but", "can", "will", "into", "about", "more", "other", "such", "than", "then"
+        "not", "but", "can", "will", "into", "about", "more", "other", "such", "than", "then",
+        "universitas", "fakultas", "program", "studi", "prodi", "kampus", "penerbit", "halaman",
+        "dokumen", "tanggal", "jadwal", "ditulis", "disusun", "revisi", "semester", "dosen",
+        "mahasiswa", "matakuliah", "kuliah", "modul", "bab", "bagian", "daftar", "pustaka",
+        "isbn", "issn", "copyright", "cetakan", "edisi", "pengampu", "koordinator", "kaprodi"
+    )
+
+    private val INSTRUCTIONAL_SIGNAL_REGEX = Regex(
+        "\\b(adalah|merupakan|ialah|yaitu|berfungsi|digunakan|bertujuan|proses|tahap|langkah|prinsip|konsep|metode|rumus|algoritma|sistem|struktur|komponen|faktor|perbedaan|hubungan|contoh|definisi|karakteristik|kelebihan|kekurangan|analisis|fungsi|cara kerja)\\b",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val ADMIN_SENTENCE_NOISE_REGEX = Regex(
+        "\\b(jadwal ditulis|tanggal ditulis|tanggal disusun|tanggal revisi|diterbitkan oleh|penerbit|hak cipta|all rights reserved|isbn|issn|kode dokumen|nomor dokumen|disusun oleh|direvisi oleh|disetujui oleh|rencana pembelajaran semester|universitas multimedia nusantara|scientia boulevard|gading serpong|fakultas teknik|program studi)\\b",
+        RegexOption.IGNORE_CASE
     )
 
     fun isRemoteApiConfigured(): Boolean = BuildConfig.AI_API_KEY.isNotBlank()
@@ -187,7 +201,7 @@ object NoteAiAssistant {
             } else {
                 JSONObject().apply {
                     put("model", model)
-                    put("max_tokens", 600)
+                    put("max_tokens", 700)
                     put("temperature", 0.3)
                     put("messages", JSONArray().apply {
                         put(JSONObject().put("role", "system").put("content", systemPrompt))
@@ -230,28 +244,59 @@ object NoteAiAssistant {
         }.getOrNull()
     }
 
+    private fun scoreInstructionalSentence(sentence: String): Int {
+        var score = 0
+        if (INSTRUCTIONAL_SIGNAL_REGEX.containsMatchIn(sentence)) score += 4
+        if (sentence.contains(":")) score += 1
+        if (sentence.length in 35..220) score += 2
+        if (ADMIN_SENTENCE_NOISE_REGEX.containsMatchIn(sentence)) score -= 10
+        return score
+    }
+
     private fun extractCleanSentences(body: String): List<String> {
         if (body.isBlank()) return emptyList()
-        return body
+        val cleanedBody = DocumentNoteExtractor.cleanAcademicText(body)
+        val rawCandidates = cleanedBody
             .replace(Regex("[*_#>`~]"), "")
             .split(Regex("(?<=[.!?])\\s+|\\n+"))
             .map { it.trim().removePrefix("•").removePrefix("-").trim().replace("—", ", ").replace("–", "-") }
-            .filter { it.length >= 12 }
+            .filter { it.length >= 14 && it.count { ch -> ch.isLetter() } >= 8 }
             .distinct()
+
+        val filtered = rawCandidates.filterNot { candidate ->
+            DocumentNoteExtractor.isAdministrativeNoiseLine(candidate) ||
+                ADMIN_SENTENCE_NOISE_REGEX.containsMatchIn(candidate)
+        }
+
+        val pool = if (filtered.isNotEmpty()) filtered else rawCandidates
+        // Prioritize sentences that explain concepts/definitions while preserving relative order among equal scores
+        val withIndex = pool.withIndex().sortedWith(
+            compareByDescending<IndexedValue<String>> { scoreInstructionalSentence(it.value) }
+                .thenBy { it.index }
+        )
+        return withIndex.map { it.value }
     }
 
     private fun extractGlossary(body: String, sentences: List<String>): List<Pair<String, String>> {
         if (sentences.isEmpty()) return emptyList()
         val pairs = mutableListOf<Pair<String, String>>()
-        val lines = body.lines().map { it.trim().removePrefix("•").removePrefix("-").trim() }
-        val defRegex = Regex("^([A-Za-z0-9 /()_-]{3,40})\\s*(?::|=|\\badalah\\b|\\bmerupakan\\b|\\bis\\b|\\brefers to\\b)\\s*(.{10,200})$", RegexOption.IGNORE_CASE)
+        val cleanedBody = DocumentNoteExtractor.cleanAcademicText(body)
+        val lines = cleanedBody.lines().map { it.trim().removePrefix("•").removePrefix("-").trim() }
+        val defRegex = Regex("^([A-Za-z0-9 /()_-]{3,40})\\s*(?::|=|\\badalah\\b|\\bmerupakan\\b|\\bis\\b|\\brefers to\\b)\\s*(.{12,200})$", RegexOption.IGNORE_CASE)
 
         for (line in lines) {
+            if (DocumentNoteExtractor.isAdministrativeNoiseLine(line) || ADMIN_SENTENCE_NOISE_REGEX.containsMatchIn(line)) continue
             val m = defRegex.find(line)
             if (m != null) {
                 val term = m.groupValues[1].replace(Regex("[*_]"), "").trim()
                 val def = m.groupValues[2].replace("—", ", ").replace("–", "-").trim()
-                if (term.isNotBlank() && def.isNotBlank() && pairs.none { it.first.equals(term, true) }) {
+                val termLower = term.lowercase()
+                if (term.isNotBlank() &&
+                    def.isNotBlank() &&
+                    termLower !in STOP_WORDS &&
+                    !DocumentNoteExtractor.isAdministrativeNoiseLine("$term: $def") &&
+                    pairs.none { it.first.equals(term, true) }
+                ) {
                     pairs.add(term to def)
                 }
             }
@@ -259,9 +304,10 @@ object NoteAiAssistant {
         }
 
         if (pairs.size < 3) {
-            val words = body.replace(Regex("[^A-Za-z0-9\\s]"), " ")
+            val words = sentences.joinToString(" ")
+                .replace(Regex("[^A-Za-z0-9\\s]"), " ")
                 .split(Regex("\\s+"))
-                .filter { it.length >= 5 && it.lowercase() !in STOP_WORDS }
+                .filter { it.length >= 5 && it.lowercase() !in STOP_WORDS && it.all { ch -> ch.isLetter() } }
                 .groupingBy { it.lowercase() }
                 .eachCount()
                 .entries
@@ -306,15 +352,20 @@ object NoteAiAssistant {
         isEn: Boolean,
         fallback: NoteSummary
     ): NoteSummary {
-        val cleanBody = sanitizeInput(body, 8_000)
+        val cleanedAcademic = DocumentNoteExtractor.cleanAcademicText(body)
+        val cleanBody = sanitizeInput(cleanedAcademic.ifBlank { body }, 8_000)
         if (!isRemoteApiConfigured() || cleanBody.length < 20) return fallback
         val cleanTitle = sanitizeInput(title, 150).ifBlank { if (isEn) "Class Note" else "Catatan Kuliah" }
         val sysPrompt = if (isEn) {
-            "Summarize the student note strictly based on the text. Do not invent facts outside the text. Return 1 short overview paragraph, then lines starting with 'POINT: ' for 3-4 key points, then lines starting with 'TERM: name | definition' for 2-3 terms. Do not use em dashes."
+            "Summarize this student lecture note focusing strictly on the academic subject matter (concepts, theories, formulas, mechanisms, and examples). " +
+                "Completely IGNORE administrative document metadata such as university/campus names, publisher info, ISBN, document creation/revision schedules, syllabus tables, or lecturer names. " +
+                "Return 1 short overview paragraph on the first line, then 3-4 lines starting with 'POINT: ' for key concepts, then 2-3 lines starting with 'TERM: name | explanation'. Do not use em dashes."
         } else {
-            "Rangkum catatan kuliah berikut murni berdasarkan teks yang tertulis. Jangan mengarang fakta di luar isi catatan. Tulis 1 paragraf ringkasan singkat di baris pertama, lalu 3-4 baris diawali 'POIN: ' untuk poin kunci, lalu 2-3 baris diawali 'ISTILAH: nama | definisi'. Jangan gunakan karakter em dash."
+            "Rangkum catatan kuliah berikut dengan fokus penuh pada isi materi pelajarannya (konsep inti, pengertian, cara kerja, rumus, atau contoh penerapan). " +
+                "ABAIKAN sama sekali informasi administrasi dokumen seperti nama kampus/universitas, penerbit, jadwal ditulis/revisi, kode dokumen, tabel RPS, atau nama penyusun. " +
+                "Tulis 1 paragraf ringkasan yang mudah dipahami mahasiswa di baris pertama, lalu 3-4 baris diawali 'POIN: ' untuk poin materi penting, lalu 2-3 baris diawali 'ISTILAH: nama istilah | penjelasan singkat'. Jangan gunakan karakter em dash."
         }
-        val raw = requestRemoteCompletion(sysPrompt, "Judul: $cleanTitle\nIsi:\n$cleanBody") ?: return fallback
+        val raw = requestRemoteCompletion(sysPrompt, "Topik: $cleanTitle\nIsi Materi:\n$cleanBody") ?: return fallback
         val lines = raw.lines().map { it.trim() }.filter { it.isNotBlank() }
         val points = mutableListOf<String>()
         val terms = mutableListOf<Pair<String, String>>()
@@ -364,14 +415,14 @@ object NoteAiAssistant {
         val sections = buildList {
             add(
                 StudySection(
-                    heading = if (isEn) "Core Material" else "Pokok Bahasan",
+                    heading = if (isEn) "Core Concepts" else "Inti Materi",
                     details = corePoints
                 )
             )
             if (applicationPoints.isNotEmpty()) {
                 add(
                     StudySection(
-                        heading = if (isEn) "Key Terms & Details" else "Istilah & Rincian",
+                        heading = if (isEn) "Important Terms & Details" else "Istilah & Penjelasan Penting",
                         details = applicationPoints
                     )
                 )
@@ -381,8 +432,8 @@ object NoteAiAssistant {
         val examPoints = buildList {
             glossary.take(3).forEach { (term, def) ->
                 add(
-                    if (isEn) "Explain $term: $def"
-                    else "Jelaskan $term: $def"
+                    if (isEn) "Understand $term: $def"
+                    else "Pahami $term: $def"
                 )
             }
             if (sentences.isNotEmpty()) {
@@ -392,8 +443,8 @@ object NoteAiAssistant {
 
         return StudyGuide(
             topic = cleanTitle,
-            overview = if (isEn) "${sentences.size} statements extracted from $cleanTitle."
-            else "${sentences.size} kalimat materi dari catatan $cleanTitle.",
+            overview = if (isEn) "Key study points from $cleanTitle."
+            else "Ringkasan poin belajar dari $cleanTitle.",
             sections = sections,
             examFocusPoints = examPoints
         )
@@ -413,27 +464,29 @@ object NoteAiAssistant {
             questions.add(
                 QuizQuestion(
                     id = "q-term-$idx",
-                    question = if (isEn) "What is \"$term\" in $cleanTitle?"
-                    else "Apa yang dimaksud dengan \"$term\" pada $cleanTitle?",
+                    question = if (isEn) "What is \"$term\"?"
+                    else "Apa yang dimaksud dengan \"$term\"?",
                     answer = def,
                     explanation = if (isEn) "From your note: $term - $def"
-                    else "Kutipan catatan: $term - $def"
+                    else "Dari catatanmu: $term - $def"
                 )
             )
         }
 
         sentences.take(4).forEachIndexed { idx, sentence ->
             if (questions.size < 6) {
-                val words = sentence.split(" ").filter { it.length >= 5 && it.lowercase() !in STOP_WORDS }
-                val focusWord = words.maxByOrNull { it.length }?.replace(Regex("[^A-Za-z0-9]"), "") ?: cleanTitle
+                val words = sentence.split(" ")
+                    .map { it.replace(Regex("[^A-Za-z0-9]"), "") }
+                    .filter { it.length >= 5 && it.lowercase() !in STOP_WORDS }
+                val focusWord = words.maxByOrNull { it.length } ?: cleanTitle
                 questions.add(
                     QuizQuestion(
                         id = "q-sent-$idx",
-                        question = if (isEn) "What does your note say about \"$focusWord\"?"
-                        else "Apa penjelasan catatanmu mengenai \"$focusWord\"?",
+                        question = if (isEn) "How does your note explain \"$focusWord\"?"
+                        else "Bagaimana penjelasan tentang \"$focusWord\" di materi ini?",
                         answer = sentence,
-                        explanation = if (isEn) "Direct sentence from $cleanTitle."
-                        else "Kalimat langsung dari catatan $cleanTitle."
+                        explanation = if (isEn) "Taken from $cleanTitle."
+                        else "Diambil dari catatan $cleanTitle."
                     )
                 )
             }
@@ -465,7 +518,7 @@ object NoteAiAssistant {
             if (rawNodeItems.size < 6) {
                 val cleanWords = s.split(" ")
                     .map { it.replace(Regex("[^A-Za-z0-9-]"), "") }
-                    .filter { it.isNotBlank() }
+                    .filter { it.length >= 3 && it.lowercase() !in STOP_WORDS }
                 val label = cleanWords.take(3).joinToString(" ").take(22)
                 if (label.isNotBlank() && rawNodeItems.none { it.first.equals(label, true) }) {
                     rawNodeItems.add(Triple(label, s, s))
@@ -498,9 +551,9 @@ object NoteAiAssistant {
         val mnemonicWords = rawNodeItems.take(5).joinToString(", ") { it.first }
         val mnemonicText = if (rawNodeItems.isNotEmpty()) {
             if (isEn) {
-                "Initials ($acronym): $mnemonicWords."
+                "Initials to remember ($acronym): $mnemonicWords."
             } else {
-                "Singkatan awal ($acronym): $mnemonicWords."
+                "Jembatan keledai ($acronym): $mnemonicWords."
             }
         } else ""
 
@@ -524,17 +577,17 @@ object NoteAiAssistant {
 
     fun getSuggestedPrompts(isEn: Boolean): List<String> = if (isEn) {
         listOf(
-            "What is the main point of this note?",
+            "What is the main point of this material?",
             "Explain this in simpler words",
-            "What might come up on the exam?",
-            "List the key terms from this note"
+            "Which parts usually come up on exams?",
+            "List the key terms I need to memorize"
         )
     } else {
         listOf(
-            "Apa poin utama catatan ini?",
-            "Jelaskan dengan bahasa yang lebih sederhana",
-            "Bagian mana yang penting untuk ujian?",
-            "Sebutkan istilah penting di catatan ini"
+            "Apa inti dari materi ini?",
+            "Jelaskan pakai bahasa sehari-hari",
+            "Bagian mana yang sering keluar saat ujian?",
+            "Apa saja istilah penting yang perlu dihafal?"
         )
     }
 
@@ -547,14 +600,15 @@ object NoteAiAssistant {
     ): Pair<String, String> {
         val cleanQuery = sanitizeInput(query, 600)
         val cleanTitle = sanitizeInput(noteTitle, 150).ifBlank { if (isEn) "Class Note" else "Catatan Kuliah" }
-        val cleanBody = sanitizeInput(noteBody, 10_000)
+        val cleanedAcademic = DocumentNoteExtractor.cleanAcademicText(noteBody)
+        val cleanBody = sanitizeInput(cleanedAcademic.ifBlank { noteBody }, 10_000)
         val sentences = extractCleanSentences(cleanBody)
 
         if (sentences.isEmpty()) {
             val emptyMsg = if (isEn) {
-                "This note is still empty. Write or scan your lecture material first so we can discuss its contents."
+                "This note doesn't have any material yet. Write or photograph your class notes first so we can discuss them."
             } else {
-                "Catatan ini masih kosong. Tulis atau pindai materi kuliah terlebih dahulu agar kita bisa membahas isinya."
+                "Catatan ini belum ada isinya. Tulis materi atau foto catatan kuliahmu dulu supaya kita bisa bahas bareng."
             }
             return emptyMsg to ""
         }
@@ -567,17 +621,17 @@ object NoteAiAssistant {
                 "${msg.sender}: ${sanitizeInput(msg.text, 300)}"
             }
             val sysPrompt = if (isEn) {
-                "You are a study assistant for university students. Answer strictly based on the provided student note. Do not invent facts not present in the note. Do not use em dashes. Keep answers direct and clear."
+                "You are a friendly university study partner. Answer based on the student's lecture note. Ignore any administrative metadata (campus name, publisher, syllabus dates) and focus on the actual course concepts. Keep answers natural, clear, and free of em dashes."
             } else {
-                "Kamu adalah teman belajar mahasiswa. Jawab pertanyaan hanya berdasarkan isi catatan kuliah yang diberikan. Jangan mengarang informasi di luar isi catatan, jangan gunakan pembuka basa-basi, dan jangan gunakan karakter em dash."
+                "Kamu adalah teman belajar kuliah yang asik dan jelas saat menjelaskan. Jawab pertanyaan berdasarkan isi materi catatan kuliah ini. Abaikan info administrasi seperti nama kampus, penerbit, atau tanggal penulisan dokumen. Gunakan bahasa Indonesia yang luwes, langsung ke intinya, dan jangan gunakan karakter em dash."
             }
             val userPrompt = buildString {
-                appendLine("Judul Catatan: $cleanTitle")
-                appendLine("Isi Catatan:\n$cleanBody")
+                appendLine("Judul Materi: $cleanTitle")
+                appendLine("Isi Materi:\n$cleanBody")
                 if (historyContext.isNotBlank()) {
-                    appendLine("\nRiwayat Diskusi:\n$historyContext")
+                    appendLine("\nPercakapan Sebelumnya:\n$historyContext")
                 }
-                appendLine("\nPertanyaan: $cleanQuery")
+                appendLine("\nPertanyaan Mahasiswa: $cleanQuery")
             }
             val remoteReply = requestRemoteCompletion(sysPrompt, userPrompt)
             if (!remoteReply.isNullOrBlank()) {
@@ -591,49 +645,50 @@ object NoteAiAssistant {
 
         val responseText = when {
             qLower.contains("terpenting") || qLower.contains("utama") || qLower.contains("intinya") ||
-                qLower.contains("rangkum") || qLower.contains("important") || qLower.contains("summary") || qLower.contains("main point") -> {
+                qLower.contains("inti") || qLower.contains("rangkum") || qLower.contains("important") ||
+                qLower.contains("summary") || qLower.contains("main point") -> {
                 val points = summary.keyPoints.take(3).joinToString("\n") { "• $it" }
                 if (isEn) {
                     "Main points from \"$cleanTitle\":\n$points"
                 } else {
-                    "Poin utama dari \"$cleanTitle\":\n$points"
+                    "Inti materi dari \"$cleanTitle\":\n$points"
                 }
             }
             qLower.contains("analogi") || qLower.contains("sederhana") || qLower.contains("mudah") ||
-                qLower.contains("simpler") || qLower.contains("simple") || qLower.contains("eli5") -> {
+                qLower.contains("sehari-hari") || qLower.contains("simpler") || qLower.contains("simple") || qLower.contains("eli5") -> {
                 listOf(canvasData.eli5Text, canvasData.mnemonicText).filter { it.isNotBlank() }.joinToString("\n\n")
             }
             qLower.contains("ujian") || qLower.contains("kuis") || qLower.contains("soal") ||
                 qLower.contains("exam") || qLower.contains("quiz") || qLower.contains("test") -> {
                 val focuses = studyGuide.examFocusPoints.take(3).joinToString("\n") { "• $it" }
                 if (isEn) {
-                    "Key points to review for exams from \"$cleanTitle\":\n$focuses"
+                    "Parts worth reviewing for exams in \"$cleanTitle\":\n$focuses"
                 } else {
-                    "Bagian yang perlu dipelajari untuk ujian dari \"$cleanTitle\":\n$focuses"
+                    "Bagian yang perlu kamu kuasai buat ujian dari \"$cleanTitle\":\n$focuses"
                 }
             }
             qLower.contains("istilah") || qLower.contains("definisi") || qLower.contains("glosarium") ||
-                qLower.contains("term") || qLower.contains("definition") -> {
+                qLower.contains("hafal") || qLower.contains("term") || qLower.contains("definition") -> {
                 if (summary.glossaryTerms.isEmpty()) {
-                    if (isEn) "No explicit term definitions (like 'Term: definition') were found in this note yet."
-                    else "Belum ada format definisi istilah (seperti 'Istilah: penjelasan') di catatan ini."
+                    if (isEn) "There aren't any specific term definitions written in this note yet."
+                    else "Belum ada daftar istilah khusus yang tertulis di catatan ini."
                 } else {
                     val terms = summary.glossaryTerms.joinToString("\n") { "• ${it.first}: ${it.second}" }
-                    if (isEn) "Terms in your note:\n$terms" else "Istilah di catatanmu:\n$terms"
+                    if (isEn) "Key terms in your note:\n$terms" else "Istilah penting di catatanmu:\n$terms"
                 }
             }
             bestQuote != null -> {
                 if (isEn) {
-                    "From \"$cleanTitle\": $bestQuote"
+                    "According to \"$cleanTitle\": $bestQuote"
                 } else {
-                    "Di catatan \"$cleanTitle\" tertulis: $bestQuote"
+                    "Di catatan \"$cleanTitle\" dijelaskan: $bestQuote"
                 }
             }
             else -> {
                 if (isEn) {
-                    "That detail is not written in \"$cleanTitle\" yet. The closest statement in your note is: ${sentences.first()}"
+                    "That specific detail isn't in \"$cleanTitle\" yet. The closest part in your note is: ${sentences.first()}"
                 } else {
-                    "Bagian tersebut belum tertulis di catatan \"$cleanTitle\". Kalimat terdekat di catatanmu: ${sentences.first()}"
+                    "Bagian itu belum tertulis di catatan \"$cleanTitle\". Bahasan yang paling dekat di catatanmu: ${sentences.first()}"
                 }
             }
         }
@@ -681,11 +736,11 @@ object NoteAiAssistant {
             return StudentProgressAssessment(
                 hasData = false,
                 readinessScore = 0,
-                statusLabel = if (isEn) "No Data Yet" else "Belum Ada Data",
+                statusLabel = if (isEn) "No Activity Yet" else "Belum Mulai",
                 summaryText = if (isEn) {
-                    "Add courses, tasks, or lecture notes first to see your study progress."
+                    "Add your courses, tasks, or class notes first to see your study progress."
                 } else {
-                    "Tambahkan mata kuliah, tugas, atau catatan kuliah terlebih dahulu untuk melihat perkembangan belajarmu."
+                    "Isi dulu jadwal matkul, tugas, atau catatan kuliahmu supaya progres belajarmu bisa terlihat di sini."
                 },
                 noteCoveragePercent = 0,
                 quizMasteryPercent = 0,
@@ -732,11 +787,6 @@ object NoteAiAssistant {
             ((semesterGpa / effectiveTargetGpa) * 100).roundToInt().coerceIn(0, 100)
         } else 0
 
-        // Bobot transparan semester berjalan (Total = 100%):
-        // 1. Catatan Kuliah = 35%
-        // 2. Penyelesaian Tugas & Rencana = 35%
-        // 3. Latihan Kuis & Kanvas = 15%
-        // 4. Nilai Semester Berjalan = 15% (IPK semester lalu TIDAK dihitung ke progres belajar semester ini)
         val noteWeight = 35
         val taskWeight = 35
         val quizWeight = 15
@@ -751,52 +801,57 @@ object NoteAiAssistant {
 
         val scoreBreakdown = listOf(
             ScoreReasonItem(
-                label = if (isEn) "Lecture Notes Coverage" else "Cakupan Catatan Kuliah",
+                label = if (isEn) "Class notes (max 35%)" else "Catatan kuliah (maks 35%)",
                 detail = if (courses.isNotEmpty()) {
-                    if (isEn) "$coursesWithNotes of ${courses.size} courses have notes (${nonBlankNotes.size} notes total)"
-                    else "$coursesWithNotes dari ${courses.size} matkul punya catatan (${nonBlankNotes.size} catatan)"
+                    if (coursesWithNotes == 0) {
+                        if (isEn) "None of your ${courses.size} courses have notes yet"
+                        else "Belum ada dari ${courses.size} matkul yang punya catatan"
+                    } else {
+                        if (isEn) "$coursesWithNotes of ${courses.size} courses already have notes"
+                        else "$coursesWithNotes dari ${courses.size} matkul sudah ada catatannya"
+                    }
                 } else {
-                    if (isEn) "${nonBlankNotes.size} notes written"
-                    else "${nonBlankNotes.size} catatan ditulis"
+                    if (isEn) "${nonBlankNotes.size} notes saved"
+                    else "${nonBlankNotes.size} catatan tersimpan"
                 },
                 rawPercent = noteCoveragePercent,
                 weightPercent = noteWeight,
                 contributionPercent = noteContribution
             ),
             ScoreReasonItem(
-                label = if (isEn) "Tasks & Study Plans" else "Tugas & Rencana Belajar",
+                label = if (isEn) "Tasks & study targets (max 35%)" else "Tugas & target belajar (maks 35%)",
                 detail = if (totalActionItems > 0) {
-                    if (isEn) "$completedActionItems of $totalActionItems tasks/plans completed"
-                    else "$completedActionItems dari $totalActionItems tugas/rencana selesai"
+                    if (isEn) "$completedActionItems of $totalActionItems tasks/targets completed"
+                    else "$completedActionItems dari $totalActionItems tugas/target belajar sudah beres"
                 } else {
-                    if (isEn) "0 tasks or study plans recorded yet"
-                    else "Belum ada tugas atau rencana belajar (0/0)"
+                    if (isEn) "No tasks or study targets added yet"
+                    else "Belum ada tugas atau target belajar yang dicatat"
                 },
                 rawPercent = taskCompletionPercent,
                 weightPercent = taskWeight,
                 contributionPercent = taskContribution
             ),
             ScoreReasonItem(
-                label = if (isEn) "Quiz & Concept Canvas" else "Latihan Kuis & Kanvas",
+                label = if (isEn) "Quiz & concept practice (max 15%)" else "Latihan kuis & kanvas (maks 15%)",
                 detail = if (validProgress.isNotEmpty()) {
-                    if (isEn) "$totalMastered/$totalCards flashcards mastered • ${validProgress.size} notes practiced"
-                    else "$totalMastered/$totalCards kartu dikuasai • ${validProgress.size} catatan dilatih"
+                    if (isEn) "$totalMastered/$totalCards flashcards mastered across ${validProgress.size} notes"
+                    else "$totalMastered dari $totalCards kartu latihan sudah dikuasai"
                 } else {
-                    if (isEn) "No quiz or canvas practice sessions yet"
-                    else "Belum ada sesi latihan kuis/kanvas"
+                    if (isEn) "Haven't tried the flashcards or concept match yet"
+                    else "Belum pernah coba latihan kuis atau cocok konsep"
                 },
                 rawPercent = quizMasteryPercent,
                 weightPercent = quizWeight,
                 contributionPercent = quizContribution
             ),
             ScoreReasonItem(
-                label = if (isEn) "Current Semester Grades" else "Nilai Semester Berjalan",
+                label = if (isEn) "This semester's grades (max 15%)" else "Nilai matkul semester ini (maks 15%)",
                 detail = if (gradedCourses.isNotEmpty()) {
-                    if (isEn) "${gradedCourses.size}/${courses.size} courses graded (Term GPA ${String.format("%.2f", semesterGpa)} vs Target ${String.format("%.2f", effectiveTargetGpa)})"
-                    else "${gradedCourses.size}/${courses.size} matkul dinilai (IPS ${String.format("%.2f", semesterGpa)} dari target ${String.format("%.2f", effectiveTargetGpa)})"
+                    if (isEn) "${gradedCourses.size}/${courses.size} courses graded (GPA ${String.format("%.2f", semesterGpa)})"
+                    else "${gradedCourses.size} dari ${courses.size} matkul sudah ada nilainya"
                 } else {
-                    if (isEn) "No current-semester course grades yet (prior GPA is excluded)"
-                    else "Belum ada nilai matkul semester ini (IPK lalu tidak dihitung)"
+                    if (isEn) "No course grades entered this semester (past GPA isn't counted here)"
+                    else "Belum ada nilai matkul semester ini (IPK semester lalu tidak dihitung)"
                 },
                 rawPercent = semesterGradePercent,
                 weightPercent = gradeWeight,
@@ -806,23 +861,23 @@ object NoteAiAssistant {
 
         val scoreReasoningSummary = if (readinessScore == 0) {
             if (isEn) {
-                "Why 0%: You currently have $coursesWithNotes/${courses.size} courses with notes (+0%), $completedActionItems/$totalActionItems completed tasks/plans (+0%), 0 practice sessions (+0%), and ${gradedCourses.size} graded courses this semester (+0%). Previous semester GPA is excluded so the score reflects actual current-semester study activity."
+                "Your score is 0% because you haven't added notes, finished tasks, practiced quizzes, or entered grades for this semester yet. Your previous semester GPA isn't mixed in here so this number stays honest to your current semester."
             } else {
-                "Mengapa 0%: Saat ini tercatat $coursesWithNotes/${courses.size} matkul memiliki catatan (+0%), $completedActionItems/$totalActionItems tugas/rencana selesai (+0%), 0 sesi latihan kuis (+0%), dan ${gradedCourses.size} matkul semester ini yang memiliki nilai (+0%). IPK semester sebelumnya tidak dimasukkan agar skor murni mencerminkan aktivitas belajar semester ini."
+                "Skormu masih 0% karena belum ada catatan materi, tugas yang selesai, latihan kuis, atau nilai matkul di semester ini. IPK semester lalu sengaja tidak ikut dihitung supaya angka ini jujur menggambarkan progres belajarmu sekarang."
             }
         } else {
             if (isEn) {
-                "Why $readinessScore%: Calculated from Notes (+$noteContribution% of $noteWeight%), Tasks & Plans (+$taskContribution% of $taskWeight%), Practice (+$quizContribution% of $quizWeight%), and Term Grades (+$gradeContribution% of $gradeWeight%)."
+                "Your $readinessScore% comes from class notes (+$noteContribution%), completed tasks & targets (+$taskContribution%), quiz practice (+$quizContribution%), and this semester's grades (+$gradeContribution%)."
             } else {
-                "Alasan skor $readinessScore%: Dihitung dari kontribusi Catatan (+$noteContribution% dari bobot $noteWeight%), Tugas & Rencana (+$taskContribution% dari bobot $taskWeight%), Latihan (+$quizContribution% dari bobot $quizWeight%), serta Nilai Semester Ini (+$gradeContribution% dari bobot $gradeWeight%)."
+                "Angka $readinessScore% ini berasal dari kelengkapan catatan (+$noteContribution%), tugas & target belajar (+$taskContribution%), latihan kuis (+$quizContribution%), serta nilai semester ini (+$gradeContribution%)."
             }
         }
 
         val statusLabel = when {
-            readinessScore >= 80 -> if (isEn) "Well Prepared" else "Siap"
-            readinessScore >= 55 -> if (isEn) "On Track" else "Cukup Terkendali"
-            readinessScore > 0 -> if (isEn) "Needs Review" else "Perlu Diulas"
-            else -> if (isEn) "Not Started (0%)" else "Belum Ada Aktivitas (0%)"
+            readinessScore >= 80 -> if (isEn) "Ready" else "Siap Ujian"
+            readinessScore >= 55 -> if (isEn) "On Track" else "Cukup Aman"
+            readinessScore > 0 -> if (isEn) "Warming Up" else "Baru Mulai Jalan"
+            else -> if (isEn) "0% (No Activity Yet)" else "0% (Belum Mulai)"
         }
 
         val strengths = mutableListOf<String>()
@@ -830,13 +885,13 @@ object NoteAiAssistant {
 
         if (nonBlankNotes.isNotEmpty()) {
             strengths.add(
-                if (isEn) "${nonBlankNotes.size} lecture notes written."
-                else "${nonBlankNotes.size} catatan kuliah sudah ditulis."
+                if (isEn) "You already have ${nonBlankNotes.size} class notes."
+                else "Sudah ada ${nonBlankNotes.size} catatan kuliah yang kamu simpan."
             )
         } else {
             focusAreas.add(
-                if (isEn) "No lecture notes written yet."
-                else "Belum ada catatan kuliah yang berisi materi."
+                if (isEn) "You haven't written or imported any class notes yet."
+                else "Belum ada catatan materi yang ditulis atau diimpor."
             )
         }
 
@@ -850,25 +905,25 @@ object NoteAiAssistant {
         if (unnotedCourses.isNotEmpty()) {
             val names = unnotedCourses.take(2).joinToString(", ") { it.title }
             focusAreas.add(
-                if (isEn) "Courses without notes: $names."
-                else "Mata kuliah belum ada catatan: $names."
+                if (isEn) "Courses that still need notes: $names."
+                else "Matkul yang belum ada catatannya: $names."
             )
         } else if (courses.isNotEmpty()) {
             strengths.add(
-                if (isEn) "Every registered course has a note."
-                else "Semua mata kuliah terdaftar sudah punya catatan."
+                if (isEn) "All of your courses already have at least one note."
+                else "Semua matkul kamu sudah punya catatan."
             )
         }
 
         val pendingTasks = tasks.filter { !it.completed }
         if (pendingTasks.isNotEmpty()) {
             focusAreas.add(
-                if (isEn) "${pendingTasks.size} unfinished tasks (${pendingTasks.first().title})."
-                else "${pendingTasks.size} tugas belum selesai (${pendingTasks.first().title})."
+                if (isEn) "${pendingTasks.size} tasks waiting to be finished (${pendingTasks.first().title})."
+                else "Ada ${pendingTasks.size} tugas yang belum beres (${pendingTasks.first().title})."
             )
         } else if (tasks.isNotEmpty()) {
             strengths.add(
-                if (isEn) "All recorded tasks are done."
+                if (isEn) "All your listed tasks are finished."
                 else "Semua tugas yang tercatat sudah selesai."
             )
         }
@@ -877,27 +932,27 @@ object NoteAiAssistant {
         if (lowGradeCourses.isNotEmpty()) {
             val lowNames = lowGradeCourses.joinToString(", ") { "${it.title} (${it.grade?.letter})" }
             focusAreas.add(
-                if (isEn) "Review courses with lower grades: $lowNames."
-                else "Ulas kembali mata kuliah dengan nilai di bawah 75: $lowNames."
+                if (isEn) "Spend extra time on courses below 75: $lowNames."
+                else "Perlu kejar materi untuk matkul dengan nilai di bawah 75: $lowNames."
             )
         } else if (courses.any { it.grade != null }) {
             strengths.add(
-                if (isEn) "Recorded course grades are 75 or above."
-                else "Nilai mata kuliah yang tercatat berada di atas batas aman."
+                if (isEn) "Your graded courses are all at 75 or above."
+                else "Nilai matkul yang sudah masuk berada di batas aman."
             )
         }
 
         if (totalCards > 0 && quizMasteryPercent >= 70) {
             strengths.add(
-                if (isEn) "Flashcard & canvas score: $quizMasteryPercent%."
-                else "Skor latihan kartu & kanvas: $quizMasteryPercent%."
+                if (isEn) "Good progress on flashcard & canvas practice ($quizMasteryPercent%)."
+                else "Latihan kartu & peta konsep cukup rutin ($quizMasteryPercent%)."
             )
         }
 
         val summaryText = if (isEn) {
-            "Based on ${courses.size} courses, ${nonBlankNotes.size} notes, and ${tasks.size} tasks."
+            "Summary from ${courses.size} courses, ${nonBlankNotes.size} notes, and ${tasks.size} tasks."
         } else {
-            "Dihitung dari ${courses.size} mata kuliah, ${nonBlankNotes.size} catatan berisi materi, dan ${tasks.size} tugas."
+            "Dilihat dari ${courses.size} matkul, ${nonBlankNotes.size} catatan materi, dan ${tasks.size} tugas."
         }
 
         return StudentProgressAssessment(

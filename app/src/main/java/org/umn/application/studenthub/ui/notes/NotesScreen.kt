@@ -96,13 +96,14 @@ fun NotesScreen(
     ) { uri ->
         if (uri != null && store != null) {
             isImportingFile = true
-            importFeedback = if (isEn) "Importing file into notebook..." else "Mengimpor file ke buku catatan..."
+            importFeedback = if (isEn) "Reading course material from file..." else "Sedang mengambil isi materi dari file..."
             scope.launch {
-                DocumentNoteExtractor.extractFromUri(context, uri)
+                val targetCourse = selectedCourseForNewNote.ifBlank { "Umum" }
+                val courseHint = dbCourses[targetCourse] ?: targetCourse
+                DocumentNoteExtractor.extractFromUri(context, uri, courseTitleHint = courseHint)
                     .onSuccess { extracted ->
-                        val targetCourse = selectedCourseForNewNote.ifBlank { "Umum" }
                         val bodyContent = extracted.extractedText.ifBlank {
-                            if (isEn) "[Imported from ${extracted.fileName}]" else "[Diimpor dari ${extracted.fileName}]"
+                            if (isEn) "[Imported from ${extracted.fileName}]" else "[Diambil dari ${extracted.fileName}]"
                         }
                         val savedNote = runCatching {
                             store.save(
@@ -115,18 +116,18 @@ fun NotesScreen(
                         isImportingFile = false
                         if (savedNote != null) {
                             importFeedback = if (isEn) {
-                                "Imported \"${savedNote.title}\" (${extracted.pageCount} page(s))."
+                                "Opened \"${savedNote.title}\"."
                             } else {
-                                "Berhasil mengimpor \"${savedNote.title}\" (${extracted.pageCount} halaman)."
+                                "Materi \"${savedNote.title}\" berhasil dibuat jadi catatan."
                             }
                             onEditNoteWithCourse(savedNote.id, savedNote.course)
                         } else {
-                            importFeedback = if (isEn) "Failed to save imported note." else "Gagal menyimpan catatan dari file."
+                            importFeedback = if (isEn) "Couldn't save note from file." else "Belum berhasil menyimpan catatan dari file."
                         }
                     }
                     .onFailure { err ->
                         isImportingFile = false
-                        importFeedback = err.message ?: if (isEn) "Could not read selected file." else "File tidak dapat dibaca."
+                        importFeedback = err.message ?: if (isEn) "Couldn't open selected file." else "File tidak bisa dibuka."
                     }
             }
         }
@@ -143,15 +144,15 @@ fun NotesScreen(
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    if (isEn) "Class Notes & Notebook" else "Catatan & Notebook",
+                    if (isEn) "Class Notes" else "Catatan Kuliah",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
                     if (isEn)
-                        "${store?.notes?.size ?: 0} notes saved • ${dbCoursesList.size} registered courses"
+                        "${store?.notes?.size ?: 0} notes • ${dbCoursesList.size} courses"
                     else
-                        "${store?.notes?.size ?: 0} catatan tersimpan • ${dbCoursesList.size} mata kuliah terdaftar",
+                        "${store?.notes?.size ?: 0} catatan • ${dbCoursesList.size} mata kuliah",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -161,7 +162,7 @@ fun NotesScreen(
             ) {
                 Icon(Icons.Default.Forum, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text(lString("Riwayat Diskusi", "Chat History"))
+                Text(lString("Riwayat Tanya", "Chat History"))
             }
         }
 
@@ -182,8 +183,8 @@ fun NotesScreen(
                 ) {
                     Icon(Icons.Default.DocumentScanner, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(lString("Pindai Catatan", "Scan Notes"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Text(lString("Kamera & OCR foto", "Camera & photo OCR"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(lString("Foto Catatan", "Photo Notes"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(lString("Papan tulis & buku tulis", "Whiteboard & notebook"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -209,8 +210,8 @@ fun NotesScreen(
                         Icon(Icons.Default.UploadFile, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(24.dp))
                     }
                     Column(Modifier.weight(1f)) {
-                        Text(lString("Unggah PDF / File", "Upload PDF / File"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                        Text(lString("PDF, DOCX, TXT, MD", "PDF, DOCX, TXT, MD"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                        Text(lString("Masukkan PDF / File", "Import PDF / File"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        Text(lString("Modul, slide, atau Word", "Slides, handouts, or Word"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
                     }
                 }
             }
@@ -434,35 +435,35 @@ fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> 
     ) { uri ->
         if (uri != null) {
             isImporting = true
-            importNotice = if (isEn) "Extracting file content..." else "Mengekstrak isi file..."
+            importNotice = if (isEn) "Reading material from file..." else "Sedang mengambil isi materi dari file..."
             scope.launch {
-                DocumentNoteExtractor.extractFromUri(context, uri)
+                val matchedCourseTitle = dbCourses.firstOrNull { it.code.equals(course, ignoreCase = true) }?.title ?: course
+                DocumentNoteExtractor.extractFromUri(context, uri, courseTitleHint = matchedCourseTitle)
                     .onSuccess { extracted ->
                         if (title.isBlank()) {
                             title = extracted.suggestedTitle
                         }
                         if (extracted.extractedText.isNotBlank()) {
-                            val header = "\n\n--- [${extracted.fileName}] ---\n"
                             body = if (body.isBlank()) {
                                 extracted.extractedText
                             } else {
-                                body.trimEnd() + header + extracted.extractedText
+                                body.trimEnd() + "\n\n" + extracted.extractedText
                             }
                             importNotice = if (isEn) {
-                                "Inserted content from ${extracted.fileName}."
+                                "Added material from ${extracted.fileName}."
                             } else {
-                                "Isi dari ${extracted.fileName} berhasil ditambahkan ke catatan."
+                                "Isi materi dari ${extracted.fileName} sudah masuk ke catatan."
                             }
                         } else {
                             importNotice = if (isEn) {
-                                "No readable text found in ${extracted.fileName}."
+                                "Couldn't find readable text in ${extracted.fileName}."
                             } else {
-                                "Tidak ditemukan teks yang dapat dibaca pada ${extracted.fileName}."
+                                "Belum ada teks materi yang terbaca dari ${extracted.fileName}."
                             }
                         }
                     }
                     .onFailure { err ->
-                        importNotice = err.message ?: if (isEn) "Failed to read file." else "Gagal membaca file."
+                        importNotice = err.message ?: if (isEn) "Couldn't open file." else "File tidak bisa dibuka."
                     }
                 isImporting = false
             }
@@ -479,9 +480,9 @@ fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> 
             Text(courseLabel.ifBlank { lString("Catatan Kuliah", "Class Note") }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             Text(
                 if (matchedCourse != null) {
-                    lString("Terhubung ke mata kuliah ${matchedCourse.title}", "Linked to course ${matchedCourse.title}")
+                    lString("Untuk mata kuliah ${matchedCourse.title}", "For ${matchedCourse.title}")
                 } else {
-                    lString("Pilih mata kuliah yang terdaftar di bawah ini", "Select a registered course below")
+                    lString("Pilih mata kuliah di bawah ini", "Choose a course below")
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -490,7 +491,7 @@ fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> 
 
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                lString("Mata Kuliah Terkait", "Linked Course"),
+                lString("Mata Kuliah", "Course"),
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold
             )
@@ -515,8 +516,8 @@ fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> 
             } else {
                 Text(
                     lString(
-                        "Belum ada mata kuliah terdaftar. Catatan akan disimpan dengan kategori Umum (tambahkan mata kuliah di menu Akademik).",
-                        "No courses registered yet. Note will be saved under General (add courses in Academics)."
+                        "Belum ada mata kuliah yang didaftarkan. Catatan ini masuk ke kategori Umum.",
+                        "No courses added yet. This note will be saved under General."
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -549,14 +550,14 @@ fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> 
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            lString("Studio Belajar", "Study Studio"),
+                            lString("Bantuan Belajar", "Study Tools"),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
                             lString(
-                                "Ringkasan, kanvas konsep, kartu latihan, dan diskusi dari isi catatanmu.",
-                                "Summary, concept canvas, flashcards, and Q&A from your note."
+                                "Bikin ringkasan inti materi, peta konsep, kartu kuis, atau tanya jawab dari catatan ini.",
+                                "Generate a summary, concept map, flashcards, or ask questions from this note."
                             ),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -576,22 +577,22 @@ fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> 
                     )
                     AssistChip(
                         onClick = { studioTab = 1; showStudio = true },
-                        label = { Text(lString("Kanvas", "Canvas")) },
+                        label = { Text(lString("Peta Konsep", "Concept Map")) },
                         leadingIcon = { Icon(Icons.Default.AccountTree, null, Modifier.size(16.dp)) }
                     )
                     AssistChip(
                         onClick = { studioTab = 2; showStudio = true },
-                        label = { Text(lString("Kuis & Panduan", "Quiz & Guide")) },
+                        label = { Text(lString("Kartu Kuis", "Flashcards")) },
                         leadingIcon = { Icon(Icons.Default.Quiz, null, Modifier.size(16.dp)) }
                     )
                     AssistChip(
                         onClick = { studioTab = 3; showStudio = true },
-                        label = { Text(lString("Tanya Catatan", "Ask Note")) },
+                        label = { Text(lString("Tanya Materi", "Ask Material")) },
                         leadingIcon = { Icon(Icons.Default.Forum, null, Modifier.size(16.dp)) }
                     )
                     AssistChip(
                         onClick = { studioTab = 4; showStudio = true },
-                        label = { Text(lString("Perkembangan", "Progress")) },
+                        label = { Text(lString("Cek Kesiapan", "Readiness")) },
                         leadingIcon = { Icon(Icons.Default.Assessment, null, Modifier.size(16.dp)) }
                     )
                 }
@@ -619,17 +620,36 @@ fun NoteEditorScreen(noteId: String, defaultCourse: String = "", onSaved: () -> 
                     Icon(Icons.Default.UploadFile, null, Modifier.size(16.dp))
                 }
                 Spacer(Modifier.width(4.dp))
-                Text(lString("Impor PDF/File", "Import PDF/File"))
+                Text(lString("Masukkan PDF/File", "Add PDF/File"))
+            }
+            if (body.isNotBlank() && !isImporting) {
+                TextButton(
+                    onClick = {
+                        isImporting = true
+                        importNotice = if (isEn) "Tidying up note..." else "Merapikan isi catatan..."
+                        scope.launch {
+                            val matchedCourseTitle = dbCourses.firstOrNull { it.code.equals(course, ignoreCase = true) }?.title ?: course
+                            val cleaned = DocumentNoteExtractor.cleanAcademicText(body)
+                            val refined = DocumentNoteExtractor.refineExtractedMaterialWithAi(
+                                rawCleanedText = cleaned,
+                                titleHint = title.ifBlank { matchedCourseTitle },
+                                courseHint = matchedCourseTitle
+                            )
+                            body = refined.ifBlank { cleaned }
+                            if (title.isBlank()) {
+                                title = DocumentNoteExtractor.suggestCleanTitle(body, matchedCourseTitle)
+                            }
+                            isImporting = false
+                            importNotice = if (isEn) "Note tidied up." else "Isi catatan sudah dirapikan."
+                        }
+                    }
+                ) {
+                    Icon(Icons.Default.AutoFixHigh, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(lString("Rapikan", "Tidy Up"))
+                }
             }
             Spacer(Modifier.weight(1f))
-            TextButton(
-                onClick = { studioTab = 0; showStudio = true },
-                modifier = Modifier.padding(end = 4.dp)
-            ) {
-                Icon(Icons.AutoMirrored.Filled.MenuBook, null, Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(lString("Studio", "Studio"))
-            }
         }
         importNotice?.let { notice ->
             Text(

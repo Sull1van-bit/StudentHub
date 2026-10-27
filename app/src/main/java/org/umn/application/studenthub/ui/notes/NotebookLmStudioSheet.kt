@@ -127,7 +127,7 @@ fun NotebookLmStudioSheet(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = lString("Studio Belajar Catatan", "Note Study Studio"),
+                        text = lString("Bantuan Belajar", "Study Tools"),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -159,25 +159,25 @@ fun NotebookLmStudioSheet(
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text(lString("Kanvas", "Canvas")) },
+                    text = { Text(lString("Peta Konsep", "Concept Map")) },
                     icon = { Icon(Icons.Default.AccountTree, null, Modifier.size(18.dp)) }
                 )
                 Tab(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    text = { Text(lString("Kuis & Panduan", "Quiz & Guide")) },
+                    text = { Text(lString("Kartu Kuis", "Flashcards")) },
                     icon = { Icon(Icons.Default.Quiz, null, Modifier.size(18.dp)) }
                 )
                 Tab(
                     selected = selectedTab == 3,
                     onClick = { selectedTab = 3 },
-                    text = { Text(lString("Tanya Catatan", "Ask Note")) },
+                    text = { Text(lString("Tanya Materi", "Ask Material")) },
                     icon = { Icon(Icons.Default.Forum, null, Modifier.size(18.dp)) }
                 )
                 Tab(
                     selected = selectedTab == 4,
                     onClick = { selectedTab = 4 },
-                    text = { Text(lString("Asesmen & Jadwal", "Progress & Plan")) },
+                    text = { Text(lString("Cek Kesiapan", "Readiness")) },
                     icon = { Icon(Icons.Default.Assessment, null, Modifier.size(18.dp)) }
                 )
             }
@@ -1149,8 +1149,8 @@ fun StudentProgressAndScheduleSection(
                     ) {
                         Text(
                             text = lString(
-                                "Alasan & Rincian Perhitungan Skor (${assessment.readinessScore}%)",
-                                "Score Reasoning & Breakdown (${assessment.readinessScore}%)"
+                                "Dari mana angka ${assessment.readinessScore}% ini?",
+                                "Where does ${assessment.readinessScore}% come from?"
                             ),
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.SemiBold,
@@ -1172,7 +1172,7 @@ fun StudentProgressAndScheduleSection(
                             ) {
                                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                     Text(
-                                        text = "${item.label} (${item.rawPercent}% × ${item.weightPercent}%)",
+                                        text = item.label,
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.SemiBold
                                     )

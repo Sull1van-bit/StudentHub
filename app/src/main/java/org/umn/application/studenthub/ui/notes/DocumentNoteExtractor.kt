@@ -5,6 +5,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -22,6 +25,12 @@ import java.nio.charset.StandardCharsets
 import java.util.zip.Inflater
 import java.util.zip.ZipInputStream
 import kotlin.coroutines.resume
+
+enum class ScanSourceMode {
+    WHITEBOARD,
+    HANDWRITING,
+    DOCUMENT
+}
 
 data class ExtractedDocumentResult(
     val fileName: String,
@@ -45,15 +54,106 @@ object DocumentNoteExtractor {
         "image/*"
     )
 
-    suspend fun extractFromUri(context: Context, uri: Uri): Result<ExtractedDocumentResult> =
+    private val ADMIN_LINE_PATTERNS = listOf(
+        Regex("^---\\s*halaman\\s*\\d+\\s*---$", RegexOption.IGNORE_CASE),
+        Regex("^(halaman|page|hal\\.?)\\s*\\d+(\\s*(dari|of|/)\\s*\\d+)?$", RegexOption.IGNORE_CASE),
+        Regex("\\b(universitas|fakultas|program studi|prodi|jurusan|departemen|kampus|scientia boulevard|gading serpong)\\b", RegexOption.IGNORE_CASE),
+        Regex("\\b(penerbit|diterbitkan oleh|published by|percetakan|hak cipta|copyright|all rights reserved|isbn|issn|cetakan ke|edisi ke)\\b", RegexOption.IGNORE_CASE),
+        Regex("\\b(tanggal ditulis|jadwal ditulis|tanggal disusun|tanggal pembuatan|tanggal revisi|tanggal berlaku|tanggal efektif|jadwal perkuliahan|jadwal kuliah)\\b", RegexOption.IGNORE_CASE),
+        Regex("\\b(disusun oleh|ditulis oleh|dibuat oleh|direvisi oleh|diperiksa oleh|disetujui oleh|disahkan oleh|dosen pengampu|koordinator mata kuliah|kaprodi|ketua program studi|dekan)\\b", RegexOption.IGNORE_CASE),
+        Regex("\\b(kode dokumen|nomor dokumen|status dokumen|revisi ke|rencana pembelajaran semester|silabus mata kuliah|kontrak perkuliahan|bobot sks|prasyarat mata kuliah)\\b", RegexOption.IGNORE_CASE),
+        Regex("^(daftar isi|table of contents|kata pengantar|prakata|daftar pustaka|referensi|bibliografi|lampiran)$", RegexOption.IGNORE_CASE),
+        Regex("^.{3,}\\.{4,}\\s*\\d+$")
+    )
+
+    private val ADMIN_KEY_VALUE_PREFIX = Regex(
+        "^(nama kampus|perguruan tinggi|institusi|fakultas|program studi|penerbit|penulis|penyusun|dosen|jadwal|tanggal|revisi|semester|tahun akademik|kode matkul|kode mk|bobot|sks|ruang|kelas|no\\.? dokumen|isbn|hak cipta)\\s*[:=-]",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun isAdministrativeNoiseLine(rawLine: String): Boolean {
+        val line = rawLine.trim()
+        if (line.isBlank()) return true
+        if (line.length <= 2 && !line.any { it.isLetterOrDigit() }) return true
+        if (ADMIN_KEY_VALUE_PREFIX.containsMatchIn(line)) return true
+
+        // Short lines that match administrative headers/footers/publisher/campus metadata
+        if (line.length < 130 && ADMIN_LINE_PATTERNS.any { it.containsMatchIn(line) }) {
+            // Keep the line only if it clearly contains a conceptual definition ("adalah", "merupakan", etc.)
+            val hasConceptVerb = Regex("\\b(adalah|merupakan|berfungsi|didefinisikan|yaitu|ialah|digunakan untuk|bertujuan untuk)\\b", RegexOption.IGNORE_CASE)
+                .containsMatchIn(line)
+            if (!hasConceptVerb) return true
+        }
+        return false
+    }
+
+    fun cleanAcademicText(rawText: String): String {
+        if (rawText.isBlank()) return ""
+        val lines = rawText
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .lines()
+
+        val cleanedLines = mutableListOf<String>()
+        for (rawLine in lines) {
+            val trimmed = rawLine.trim().replace(Regex("\\s+"), " ")
+            if (trimmed.isBlank()) {
+                if (cleanedLines.isNotEmpty() && cleanedLines.last().isNotBlank()) {
+                    cleanedLines.add("")
+                }
+                continue
+            }
+            if (isAdministrativeNoiseLine(trimmed)) continue
+            cleanedLines.add(trimmed)
+        }
+
+        val joined = cleanedLines
+            .joinToString("\n")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+
+        // Fallback: if the entire document was very short and everything got filtered, return basic trimmed lines without page headers
+        return if (joined.length >= 20) {
+            joined
+        } else {
+            lines.map { it.trim() }
+                .filter { it.isNotBlank() && !it.startsWith("--- Halaman", ignoreCase = true) }
+                .joinToString("\n")
+                .trim()
+        }
+    }
+
+    fun suggestCleanTitle(cleanedText: String, fallbackTitle: String): String {
+        val candidate = cleanedText.lineSequence()
+            .map { it.trim().removePrefix("#").removePrefix("•").removePrefix("-").trim() }
+            .firstOrNull { line ->
+                line.length in 5..70 &&
+                    !isAdministrativeNoiseLine(line) &&
+                    !line.endsWith(".") &&
+                    line.count { it.isLetter() } >= 4
+            }
+        val rawTitle = candidate ?: fallbackTitle
+        return rawTitle
+            .replace(Regex("[_\\-]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(65)
+            .ifBlank { "Catatan Kuliah" }
+    }
+
+    suspend fun extractFromUri(
+        context: Context,
+        uri: Uri,
+        courseTitleHint: String = ""
+    ): Result<ExtractedDocumentResult> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val fileName = resolveFileName(context, uri)
                 val mimeType = context.contentResolver.getType(uri).orEmpty().lowercase()
                 val lowerName = fileName.lowercase()
-                val baseTitle = fileName.substringBeforeLast('.').ifBlank { "Catatan Impor" }
+                val baseTitle = fileName.substringBeforeLast('.').ifBlank { "Catatan Kuliah" }
 
-                when {
+                val rawResult = when {
                     mimeType == "application/pdf" || lowerName.endsWith(".pdf") -> {
                         extractPdf(context, uri, fileName, baseTitle)
                     }
@@ -62,7 +162,7 @@ object DocumentNoteExtractor {
                         lowerName.endsWith(".jpeg") ||
                         lowerName.endsWith(".png") ||
                         lowerName.endsWith(".webp") -> {
-                        extractImageUri(context, uri, fileName, baseTitle)
+                        extractImageUri(context, uri, fileName, baseTitle, ScanSourceMode.WHITEBOARD)
                     }
                     mimeType.contains("wordprocessingml") || lowerName.endsWith(".docx") -> {
                         extractDocx(context, uri, fileName, baseTitle)
@@ -71,29 +171,57 @@ object DocumentNoteExtractor {
                         extractPlainText(context, uri, fileName, baseTitle)
                     }
                 }
+
+                val cleaned = cleanAcademicText(rawResult.extractedText)
+                val refined = refineExtractedMaterialWithAi(
+                    rawCleanedText = cleaned,
+                    titleHint = suggestCleanTitle(cleaned, rawResult.suggestedTitle),
+                    courseHint = courseTitleHint,
+                    sourceMode = if (rawResult.sourceType == "IMAGE") ScanSourceMode.WHITEBOARD else ScanSourceMode.DOCUMENT
+                )
+                val finalTitle = suggestCleanTitle(refined, rawResult.suggestedTitle)
+                rawResult.copy(
+                    suggestedTitle = finalTitle,
+                    extractedText = refined
+                )
             }
         }
 
     suspend fun extractFromBitmap(
         bitmap: Bitmap,
-        sourceName: String = "Hasil Pindai Kamera"
+        sourceName: String = "Catatan Papan Tulis",
+        scanMode: ScanSourceMode = ScanSourceMode.WHITEBOARD,
+        courseTitleHint: String = ""
     ): Result<ExtractedDocumentResult> = withContext(Dispatchers.IO) {
         runCatching {
-            val recognized = recognizeTextFromBitmap(bitmap).trim()
-            val firstLine = recognized.lineSequence()
-                .map { it.trim() }
-                .firstOrNull { it.length >= 4 }
-                ?.take(60)
-            val suggestedTitle = firstLine ?: sourceName
-            val finalBody = if (recognized.isNotBlank()) {
-                recognized
+            val processedBitmap = preprocessBitmapForOcr(bitmap, scanMode)
+            val recognizedRaw = recognizeTextFromBitmap(processedBitmap).trim()
+            val fallbackRaw = if (recognizedRaw.length < 10 && processedBitmap !== bitmap) {
+                recognizeTextFromBitmap(bitmap).trim()
+            } else {
+                recognizedRaw
+            }
+            if (processedBitmap !== bitmap) {
+                runCatching { processedBitmap.recycle() }
+            }
+
+            val cleaned = cleanAcademicText(fallbackRaw)
+            val refined = if (cleaned.isNotBlank()) {
+                refineExtractedMaterialWithAi(
+                    rawCleanedText = cleaned,
+                    titleHint = sourceName,
+                    courseHint = courseTitleHint,
+                    sourceMode = scanMode
+                )
             } else {
                 ""
             }
+            val suggestedTitle = suggestCleanTitle(refined.ifBlank { cleaned }, sourceName)
+
             ExtractedDocumentResult(
                 fileName = "$sourceName.jpg",
                 suggestedTitle = suggestedTitle,
-                extractedText = finalBody,
+                extractedText = refined.ifBlank { cleaned },
                 previewBitmap = bitmap,
                 pageCount = 1,
                 sourceType = "IMAGE"
@@ -101,23 +229,92 @@ object DocumentNoteExtractor {
         }
     }
 
+    suspend fun refineExtractedMaterialWithAi(
+        rawCleanedText: String,
+        titleHint: String,
+        courseHint: String = "",
+        sourceMode: ScanSourceMode = ScanSourceMode.DOCUMENT
+    ): String {
+        val trimmed = rawCleanedText.trim()
+        if (trimmed.length < 35 || !NoteAiAssistant.isRemoteApiConfigured()) {
+            return trimmed
+        }
+
+        val systemPrompt = when (sourceMode) {
+            ScanSourceMode.WHITEBOARD -> {
+                "Kamu adalah asisten belajar mahasiswa. Rapikan hasil bacaan OCR dari foto papan tulis kelas berikut menjadi catatan kuliah yang rapi, jelas, dan mudah dipelajari. " +
+                    "Pertahankan semua konsep, definisi, rumus, langkah penyelesaian, dan contoh yang ada di papan tulis. " +
+                    "Perbaiki kata yang salah terbaca karena silau atau tulisan spidol, tetapi JANGAN mengarang materi di luar yang tertulis. " +
+                    "Jangan gunakan pembuka basa-basi dan jangan gunakan karakter em dash."
+            }
+            ScanSourceMode.HANDWRITING -> {
+                "Kamu adalah asisten belajar mahasiswa. Rapikan hasil bacaan OCR dari foto catatan tulis tangan mahasiswa berikut menjadi catatan yang terstruktur dan mudah dibaca ulang. " +
+                    "Susun poin-poin, definisi, dan rumus agar rapi, perbaiki ejaan yang terpotong karena tulisan tangan, tetapi JANGAN menambah fakta di luar isi catatan. " +
+                    "Jangan gunakan pembuka basa-basi dan jangan gunakan karakter em dash."
+            }
+            ScanSourceMode.DOCUMENT -> {
+                "Kamu adalah asisten belajar mahasiswa. Susun isi dokumen/PDF kuliah berikut menjadi catatan materi kuliah yang fokus pada substansi pelajaran (pengertian, konsep inti, poin penting, rumus/tahapan, dan contoh). " +
+                    "ABAIKAN dan BUANG seluruh informasi administrasi dokumen seperti nama kampus/universitas, fakultas, penerbit, ISBN, hak cipta, jadwal penulisan/revisi dokumen, nama dosen/penyusun, daftar isi, atau tabel pengesahan RPS. " +
+                    "Jangan gunakan pembuka basa-basi dan jangan gunakan karakter em dash."
+            }
+        }
+
+        val userPrompt = buildString {
+            if (courseHint.isNotBlank()) appendLine("Mata Kuliah: $courseHint")
+            if (titleHint.isNotBlank()) appendLine("Topik/Judul: $titleHint")
+            appendLine("\nTeks Sumber:\n${trimmed.take(9000)}")
+        }
+
+        val aiResult = NoteAiAssistant.requestRemoteCompletion(systemPrompt, userPrompt)
+        return if (!aiResult.isNullOrBlank() && aiResult.length >= 25) {
+            aiResult.trim()
+        } else {
+            trimmed
+        }
+    }
+
+    private fun preprocessBitmapForOcr(source: Bitmap, mode: ScanSourceMode): Bitmap {
+        if (mode == ScanSourceMode.DOCUMENT) return source
+        return runCatching {
+            val out = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out)
+            val contrast = if (mode == ScanSourceMode.WHITEBOARD) 1.35f else 1.25f
+            val translate = (-0.5f * contrast + 0.5f) * 255f
+            val matrix = ColorMatrix(
+                floatArrayOf(
+                    0.3f * contrast, 0.59f * contrast, 0.11f * contrast, 0f, translate,
+                    0.3f * contrast, 0.59f * contrast, 0.11f * contrast, 0f, translate,
+                    0.3f * contrast, 0.59f * contrast, 0.11f * contrast, 0f, translate,
+                    0f, 0f, 0f, 1f, 0f
+                )
+            )
+            val paint = Paint().apply {
+                colorFilter = ColorMatrixColorFilter(matrix)
+            }
+            canvas.drawBitmap(source, 0f, 0f, paint)
+            out
+        }.getOrDefault(source)
+    }
+
     private suspend fun extractImageUri(
         context: Context,
         uri: Uri,
         fileName: String,
-        baseTitle: String
+        baseTitle: String,
+        scanMode: ScanSourceMode = ScanSourceMode.WHITEBOARD
     ): ExtractedDocumentResult {
-        val bitmap = decodeSampledBitmap(context, uri, maxDimension = 2048)
-            ?: error("Gambar tidak dapat dibaca.")
-        val recognized = recognizeTextFromBitmap(bitmap).trim()
-        val firstLine = recognized.lineSequence()
-            .map { it.trim() }
-            .firstOrNull { it.length >= 4 }
-            ?.take(60)
+        val bitmap = decodeSampledBitmap(context, uri, maxDimension = 2200)
+            ?: error("Gambar tidak bisa dibuka.")
+        val processed = preprocessBitmapForOcr(bitmap, scanMode)
+        val recognized = recognizeTextFromBitmap(processed).trim()
+        if (processed !== bitmap) {
+            runCatching { processed.recycle() }
+        }
+        val cleaned = cleanAcademicText(recognized)
         return ExtractedDocumentResult(
             fileName = fileName,
-            suggestedTitle = firstLine ?: baseTitle,
-            extractedText = recognized,
+            suggestedTitle = suggestCleanTitle(cleaned, baseTitle),
+            extractedText = cleaned,
             previewBitmap = bitmap,
             pageCount = 1,
             sourceType = "IMAGE"
@@ -136,7 +333,7 @@ object DocumentNoteExtractor {
                 FileOutputStream(tempFile).use { output ->
                     input.copyTo(output)
                 }
-            } ?: error("File PDF tidak dapat dibuka.")
+            } ?: error("File PDF tidak bisa dibuka.")
 
             val pageTexts = mutableListOf<String>()
             var firstPageBitmap: Bitmap? = null
@@ -149,7 +346,7 @@ object DocumentNoteExtractor {
                     val pagesToRead = totalPages.coerceAtMost(15)
                     for (pageIndex in 0 until pagesToRead) {
                         renderer.openPage(pageIndex).use { page ->
-                            val scale = (1600f / maxOf(page.width, page.height, 1)).coerceIn(1.5f, 3.0f)
+                            val scale = (1800f / maxOf(page.width, page.height, 1)).coerceIn(1.5f, 3.2f)
                             val width = (page.width * scale).toInt().coerceAtLeast(1)
                             val height = (page.height * scale).toInt().coerceAtLeast(1)
                             val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
@@ -157,12 +354,17 @@ object DocumentNoteExtractor {
                             canvas.drawColor(Color.WHITE)
                             page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
-                            val pageText = recognizeTextFromBitmap(bmp).trim()
-                            if (pageText.isNotBlank()) {
-                                pageTexts.add(
-                                    if (totalPages > 1) "--- Halaman ${pageIndex + 1} ---\n$pageText"
-                                    else pageText
-                                )
+                            val rawPageText = recognizeTextFromBitmap(bmp).trim()
+                            val cleanedPageText = cleanAcademicText(rawPageText)
+                            if (cleanedPageText.isNotBlank()) {
+                                // Skip page 1 if it only contains a couple of short cover-page lines and there are more pages
+                                val nonBlankLines = cleanedPageText.lines().filter { it.isNotBlank() }
+                                val isLikelyCoverPage = pageIndex == 0 && totalPages > 1 &&
+                                    nonBlankLines.size <= 4 &&
+                                    cleanedPageText.length < 180
+                                if (!isLikelyCoverPage) {
+                                    pageTexts.add(cleanedPageText)
+                                }
                             }
 
                             if (pageIndex == 0) {
@@ -177,16 +379,13 @@ object DocumentNoteExtractor {
 
             var combinedText = pageTexts.joinToString("\n\n").trim()
             if (combinedText.isBlank()) {
-                combinedText = extractTextFromPdfStreams(tempFile.readBytes()).trim()
-            }
-
-            if (totalPages > 15 && combinedText.isNotBlank()) {
-                combinedText += "\n\n[Catatan: Menampilkan 15 dari $totalPages halaman PDF]"
+                val streamRaw = extractTextFromPdfStreams(tempFile.readBytes()).trim()
+                combinedText = cleanAcademicText(streamRaw)
             }
 
             return ExtractedDocumentResult(
                 fileName = fileName,
-                suggestedTitle = baseTitle,
+                suggestedTitle = suggestCleanTitle(combinedText, baseTitle),
                 extractedText = combinedText,
                 previewBitmap = firstPageBitmap,
                 pageCount = totalPages.coerceAtLeast(1),
@@ -217,7 +416,7 @@ object DocumentNoteExtractor {
                                 .map { decodeXmlEntities(it.groupValues[1]) }
                                 .joinToString("")
                                 .trim()
-                            if (line.isNotBlank()) {
+                            if (line.isNotBlank() && !isAdministrativeNoiseLine(line)) {
                                 paragraphs.add(line)
                             }
                         }
@@ -226,12 +425,13 @@ object DocumentNoteExtractor {
                     entry = zis.nextEntry
                 }
             }
-        } ?: error("File dokumen tidak dapat dibuka.")
+        } ?: error("File dokumen tidak bisa dibuka.")
 
+        val combined = cleanAcademicText(paragraphs.joinToString("\n\n"))
         return ExtractedDocumentResult(
             fileName = fileName,
-            suggestedTitle = baseTitle,
-            extractedText = paragraphs.joinToString("\n\n"),
+            suggestedTitle = suggestCleanTitle(combined, baseTitle),
+            extractedText = combined,
             previewBitmap = null,
             pageCount = 1,
             sourceType = "DOCX"
@@ -255,7 +455,7 @@ object DocumentNoteExtractor {
                 total += read
             }
             buffer.toByteArray()
-        } ?: error("File tidak dapat dibaca.")
+        } ?: error("File tidak bisa dibaca.")
 
         var content = rawBytes.toString(StandardCharsets.UTF_8)
         if (fileName.endsWith(".html", ignoreCase = true) || fileName.endsWith(".htm", ignoreCase = true)) {
@@ -271,10 +471,11 @@ object DocumentNoteExtractor {
                 .trim()
         }
 
+        val cleaned = cleanAcademicText(content)
         return ExtractedDocumentResult(
             fileName = fileName,
-            suggestedTitle = baseTitle,
-            extractedText = content.trim(),
+            suggestedTitle = suggestCleanTitle(cleaned, baseTitle),
+            extractedText = cleaned,
             previewBitmap = null,
             pageCount = 1,
             sourceType = "TEXT"
@@ -403,6 +604,6 @@ object DocumentNoteExtractor {
                     }
                 }
         }
-        return uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { "dokumen_impor.txt" } ?: "dokumen_impor.txt"
+        return uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { "dokumen_kuliah.txt" } ?: "dokumen_kuliah.txt"
     }
 }
