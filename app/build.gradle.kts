@@ -30,9 +30,9 @@ android {
     defaultConfig {
         applicationId = "org.umn.application.studenthub"
         minSdk = 27
-        targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 35
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -41,8 +41,22 @@ android {
         buildConfigField("String", "AI_MODEL", "\"${resolveBuildSecret("AI_MODEL", "", "gemini-2.5-flash")}\"")
     }
 
+    signingConfigs {
+        getByName("debug") {
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
             optimization {
                 enable = false
             }
