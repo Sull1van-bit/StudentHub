@@ -13,10 +13,11 @@ val localProps = Properties().apply {
 }
 
 fun resolveBuildSecret(key: String, fallbackKey: String = "", default: String = ""): String {
-    val raw = localProps.getProperty(key)
-        ?: (if (fallbackKey.isNotEmpty()) localProps.getProperty(fallbackKey) else null)
-        ?: System.getenv(key)
+    // Environment variable lebih diutamakan (panduan Gemini API), local.properties untuk dev lokal.
+    val raw = System.getenv(key)
         ?: (if (fallbackKey.isNotEmpty()) System.getenv(fallbackKey) else null)
+        ?: localProps.getProperty(key)
+        ?: (if (fallbackKey.isNotEmpty()) localProps.getProperty(fallbackKey) else null)
         ?: default
     return raw.trim().replace("\\", "\\\\").replace("\"", "\\\"")
 }
@@ -31,14 +32,17 @@ android {
         applicationId = "org.umn.application.studenthub"
         minSdk = 27
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "AI_API_KEY", "\"${resolveBuildSecret("AI_API_KEY", "GEMINI_API_KEY", "")}\"")
         buildConfigField("String", "AI_BASE_URL", "\"${resolveBuildSecret("AI_BASE_URL", "", "https://generativelanguage.googleapis.com/v1beta")}\"")
-        buildConfigField("String", "AI_MODEL", "\"${resolveBuildSecret("AI_MODEL", "", "gemini-2.5-flash")}\"")
+        buildConfigField("String", "AI_MODEL", "\"${resolveBuildSecret("AI_MODEL", "", "gemini-3.8-flash")}\"")
+        buildConfigField("String", "AI_FALLBACK_MODEL", "\"${resolveBuildSecret("AI_FALLBACK_MODEL", "", "gemini-3.5-flash")}\"")
+        buildConfigField("String", "NOTEBOOKLM_BASE_URL", "\"${resolveBuildSecret("NOTEBOOKLM_BASE_URL", "", "http://10.0.2.2:8000")}\"")
+        buildConfigField("String", "NOTEBOOKLM_API_KEY", "\"${resolveBuildSecret("NOTEBOOKLM_API_KEY", "", "")}\"")
     }
 
     signingConfigs {

@@ -152,164 +152,214 @@ object NoteAiAssistant {
     private fun sanitizeInput(text: String, maxChars: Int): String =
         text.replace("\u0000", "").replace("—", "-").replace("–", "-").trim().take(maxChars)
 
+    // Identitas aplikasi untuk header X-Android-Package / X-Android-Cert.
+    // Dipakai Google untuk memvalidasi API key yang dibatasi ke aplikasi Android (package + SHA-1).
+    @Volatile
+    private var androidPackageName: String = ""
+
+    @Volatile
+    private var androidCertSha1: String = ""
+
+    fun init(context: android.content.Context) {
+        androidPackageName = context.packageName
+        androidCertSha1 = runCatching { signingCertSha1(context) }.getOrDefault("")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun signingCertSha1(context: android.content.Context): String {
+        val pm = context.packageManager
+        val signatures = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            pm.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                .signingInfo?.apkContentsSigners
+        } else {
+            pm.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_SIGNATURES).signatures
+        }
+        val cert = signatures?.firstOrNull()?.toByteArray() ?: return ""
+        return java.security.MessageDigest.getInstance("SHA-1").digest(cert)
+            .joinToString("") { "%02X".format(it) }
+    }
+
+    private fun isRetryableStatus(status: Int): Boolean = status == 408 || status == 429 || status in 500..599
+
+    private fun describeHttpError(status: Int): String = when (status) {
+        400 -> "Permintaan ke AI tidak valid (HTTP 400). Cek nama model di AI_MODEL."
+        401, 403 -> "API key ditolak (HTTP $status). Cek key, batasan key, atau izin project di Google AI Studio."
+        404 -> "Model atau endpoint tidak ditemukan (HTTP 404). Cek AI_MODEL dan AI_BASE_URL."
+        429 -> "Batas pemakaian AI tercapai (HTTP 429). Coba lagi sebentar lagi."
+        in 500..599 -> "Server AI sedang sibuk (HTTP $status). Coba lagi sebentar lagi."
+        else -> "Gagal menghubungi AI (HTTP $status)."
+    }
+
+    /** Hapus "/models" di ujung base URL supaya endpoint tidak menjadi ".../models/models/...". */
+    private fun normalizeBaseUrl(raw: String): String {
+        var url = raw.trim().trimEnd('/')
+        if (url.endsWith("/models", ignoreCase = true)) url = url.dropLast("/models".length)
+        return url
+    }
+
+    private class AiHttpResult(val status: Int, val text: String?, val error: String?, val retryAfterMs: Long?)
+
     /**
-     * Calls developer-configured HTTPS AI endpoint using header authentication only.
-     * Automatically adapts max_tokens if the gateway rejects high token reservations (HTTP 429 quota_exceeded).
+     * Memanggil endpoint AI lewat HTTPS dengan key di header (tidak pernah di URL).
+     *
+     * Untuk Gemini API mengikuti panduan resmi Google:
+     * - `thinkingLevel = low` dan `maxOutputTokens` longgar, karena token berpikir ikut dihitung
+     *   dalam batas output. Batas kecil membuat jawaban terpotong atau kosong.
+     * - `temperature` tidak dikirim (diabaikan di Gemini 3.6+ dan akan ditolak di rilis berikutnya).
+     * - Retry hanya untuk error sementara (408, 429, 5xx) dengan exponential backoff + jitter,
+     *   lalu pindah ke model cadangan jika model utama sedang penuh.
      */
     suspend fun requestRemoteCompletion(
         systemPrompt: String,
         userPrompt: String,
-        preferredMaxTokens: Int = 550,
+        preferredMaxTokens: Int = 2048,
         base64JpegImage: String? = null
     ): String? = withContext(Dispatchers.IO) {
         val apiKey = BuildConfig.AI_API_KEY.trim()
-        val baseUrl = BuildConfig.AI_BASE_URL.trim().trimEnd('/')
-        val model = BuildConfig.AI_MODEL.trim().ifBlank { "gpt-5.4-mini" }
+        val baseUrl = normalizeBaseUrl(BuildConfig.AI_BASE_URL)
         if (apiKey.isBlank() || !baseUrl.startsWith("https://", ignoreCase = true)) {
             return@withContext null
         }
 
         val isGeminiNative = baseUrl.contains("generativelanguage.googleapis.com", ignoreCase = true)
-        val tokenBudgets = listOf(preferredMaxTokens, 320, 190, 120, 80)
-            .filter { it <= preferredMaxTokens }
+        val primaryModel = BuildConfig.AI_MODEL.trim().ifBlank { "gemini-3.5-flash" }
+        val models = listOf(primaryModel, BuildConfig.AI_FALLBACK_MODEL.trim())
+            .filter { it.isNotBlank() }
             .distinct()
 
-        for ((attemptIdx, maxTok) in tokenBudgets.withIndex()) {
-            val promptLimit = when {
-                maxTok >= 400 -> 7500
-                maxTok >= 250 -> 4500
-                maxTok >= 150 -> 2600
-                else -> 1500
-            }
-            val clippedUserPrompt = userPrompt.take(promptLimit)
-            val includeImage = base64JpegImage != null && attemptIdx <= 1
-
-            val attemptResult = runCatching {
-                val endpoint = if (isGeminiNative) {
-                    "$baseUrl/models/$model:generateContent"
-                } else {
-                    "$baseUrl/chat/completions"
-                }
-                val url = URI(endpoint).toURL()
-                val conn = (url.openConnection() as HttpsURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 12_000
-                    readTimeout = 24_000
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    if (isGeminiNative) {
-                        setRequestProperty("x-goog-api-key", apiKey)
-                    } else {
-                        setRequestProperty("Authorization", "Bearer $apiKey")
-                    }
+        val maxAttemptsPerModel = 3
+        for (model in models) {
+            for (attempt in 0 until maxAttemptsPerModel) {
+                val result = runCatching {
+                    callModelOnce(baseUrl, apiKey, model, isGeminiNative, systemPrompt, userPrompt, preferredMaxTokens, base64JpegImage)
+                }.getOrElse { err ->
+                    // Timeout / jaringan putus dianggap error sementara.
+                    AiHttpResult(-1, null, "Koneksi ke AI terputus (${err.javaClass.simpleName}).", null)
                 }
 
-                val payloadJson = if (isGeminiNative) {
-                    JSONObject().apply {
-                        put("systemInstruction", JSONObject().apply {
-                            put("parts", JSONArray().put(JSONObject().put("text", systemPrompt)))
-                        })
-                        val userParts = JSONArray().apply {
-                            put(JSONObject().put("text", clippedUserPrompt))
-                            if (includeImage && !base64JpegImage.isNullOrBlank()) {
-                                put(JSONObject().put("inlineData", JSONObject().apply {
-                                    put("mimeType", "image/jpeg")
-                                    put("data", base64JpegImage)
-                                }))
-                            }
-                        }
-                        put("contents", JSONArray().put(JSONObject().apply {
-                            put("role", "user")
-                            put("parts", userParts)
-                        }))
-                        put("generationConfig", JSONObject().apply {
-                            put("temperature", 0.25)
-                            put("maxOutputTokens", maxTok)
-                        })
-                    }.toString()
-                } else {
-                    JSONObject().apply {
-                        put("model", model)
-                        put("max_tokens", maxTok)
-                        put("temperature", 0.25)
-                        put("messages", JSONArray().apply {
-                            put(JSONObject().put("role", "system").put("content", systemPrompt))
-                            if (includeImage && !base64JpegImage.isNullOrBlank()) {
-                                val contentArr = JSONArray().apply {
-                                    put(JSONObject().put("type", "text").put("text", clippedUserPrompt))
-                                    put(JSONObject().apply {
-                                        put("type", "image_url")
-                                        put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$base64JpegImage"))
-                                    })
-                                }
-                                put(JSONObject().put("role", "user").put("content", contentArr))
-                            } else {
-                                put(JSONObject().put("role", "user").put("content", clippedUserPrompt))
-                            }
-                        })
-                    }.toString()
-                }
-
-                OutputStreamWriter(conn.outputStream, StandardCharsets.UTF_8).use { writer ->
-                    writer.write(payloadJson)
-                    writer.flush()
-                }
-
-                val status = conn.responseCode
-                if (status !in 200..299) {
-                    val errText = runCatching {
-                        conn.errorStream?.let { es ->
-                            BufferedReader(InputStreamReader(es, StandardCharsets.UTF_8)).use { it.readText() }
-                        }.orEmpty()
-                    }.getOrDefault("")
-                    conn.disconnect()
-                    return@runCatching Pair<String?, Int>(errText, status)
-                }
-
-                val responseText = BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)).use {
-                    it.readText()
-                }
-                conn.disconnect()
-
-                val root = JSONObject(responseText)
-                val extracted = if (isGeminiNative) {
-                    root.optJSONArray("candidates")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("content")
-                        ?.optJSONArray("parts")
-                        ?.optJSONObject(0)
-                        ?.optString("text")
-                } else {
-                    root.optJSONArray("choices")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("message")
-                        ?.optString("content")
-                }
-                val clean = extracted?.let { redactSecrets(it).trim() }?.takeIf { it.isNotBlank() }
-                Pair(clean, status)
-            }.getOrNull()
-
-            if (attemptResult != null) {
-                val (bodyOrErr, status) = attemptResult
-                if (status in 200..299 && !bodyOrErr.isNullOrBlank()) {
+                if (result.status in 200..299 && !result.text.isNullOrBlank()) {
                     lastRemoteError = null
-                    return@withContext bodyOrErr
+                    return@withContext result.text
                 }
-                if (status == 429 || status == 402) {
-                    lastRemoteError = "Kuota/saldo API terbatas (HTTP $status). Mencoba menyesuaikan ukuran respons..."
-                    kotlinx.coroutines.delay(950L)
-                    continue
-                } else {
-                    lastRemoteError = "Gagal menghubungi AI (HTTP $status)"
+
+                lastRemoteError = result.error ?: describeHttpError(result.status)
+                val retryable = result.status == -1 || isRetryableStatus(result.status)
+                if (!retryable) {
+                    // 400/401/403: mengulang tidak akan membantu, model cadangan pun pakai key yang sama.
+                    // 404 (model tidak ada) masih bisa ditolong model cadangan.
+                    if (result.status in 400..499 && result.status != 404) return@withContext null
                     break
                 }
+                if (attempt < maxAttemptsPerModel - 1) {
+                    val backoff = 1000L shl attempt // 1s, 2s, 4s
+                    val jitter = kotlin.random.Random.nextLong(0, 500)
+                    kotlinx.coroutines.delay(maxOf(result.retryAfterMs ?: 0L, backoff + jitter).coerceAtMost(10_000L))
+                }
+            }
+        }
+        null
+    }
+
+    private fun callModelOnce(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        isGeminiNative: Boolean,
+        systemPrompt: String,
+        userPrompt: String,
+        preferredMaxTokens: Int,
+        base64JpegImage: String?
+    ): AiHttpResult {
+        val endpoint = if (isGeminiNative) "$baseUrl/models/$model:generateContent" else "$baseUrl/chat/completions"
+        val conn = (URI(endpoint).toURL().openConnection() as HttpsURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15_000
+            readTimeout = 60_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            if (isGeminiNative) {
+                setRequestProperty("x-goog-api-key", apiKey)
+                if (androidPackageName.isNotBlank()) setRequestProperty("X-Android-Package", androidPackageName)
+                if (androidCertSha1.isNotBlank()) setRequestProperty("X-Android-Cert", androidCertSha1)
+            } else {
+                setRequestProperty("Authorization", "Bearer $apiKey")
             }
         }
 
-        if (lastRemoteError != null && lastRemoteError!!.contains("429")) {
-            lastRemoteError = "Saldo TokenGateway saat ini tidak cukup untuk memproses teks penuh (HTTP 429: Saldo tersedia tidak cukup)."
+        val userPromptText = userPrompt.take(12_000)
+        val payloadJson = if (isGeminiNative) {
+            JSONObject().apply {
+                put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt))))
+                val userParts = JSONArray().put(JSONObject().put("text", userPromptText))
+                if (!base64JpegImage.isNullOrBlank()) {
+                    userParts.put(JSONObject().put("inlineData", JSONObject().apply {
+                        put("mimeType", "image/jpeg")
+                        put("data", base64JpegImage)
+                    }))
+                }
+                put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", userParts)))
+                put("generationConfig", JSONObject().apply {
+                    // Batas keras saja; kontrol biaya/latensi lewat thinkingLevel, bukan batas output kecil.
+                    put("maxOutputTokens", maxOf(preferredMaxTokens, 2048).coerceAtMost(8192))
+                    put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
+                })
+            }.toString()
+        } else {
+            JSONObject().apply {
+                put("model", model)
+                put("max_tokens", preferredMaxTokens)
+                put("messages", JSONArray().apply {
+                    put(JSONObject().put("role", "system").put("content", systemPrompt))
+                    if (!base64JpegImage.isNullOrBlank()) {
+                        val contentArr = JSONArray()
+                            .put(JSONObject().put("type", "text").put("text", userPromptText))
+                            .put(JSONObject().put("type", "image_url")
+                                .put("image_url", JSONObject().put("url", "data:image/jpeg;base64,$base64JpegImage")))
+                        put(JSONObject().put("role", "user").put("content", contentArr))
+                    } else {
+                        put(JSONObject().put("role", "user").put("content", userPromptText))
+                    }
+                })
+            }.toString()
         }
-        null
+
+        try {
+            OutputStreamWriter(conn.outputStream, StandardCharsets.UTF_8).use { it.write(payloadJson) }
+            val status = conn.responseCode
+            if (status !in 200..299) {
+                val retryAfterMs = conn.getHeaderField("Retry-After")?.trim()?.toLongOrNull()?.times(1000)
+                return AiHttpResult(status, null, null, retryAfterMs)
+            }
+            val responseText = BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)).use { it.readText() }
+            val root = JSONObject(responseText)
+
+            if (!isGeminiNative) {
+                val content = root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+                return AiHttpResult(status, content?.let { redactSecrets(it).trim() }?.takeIf { it.isNotBlank() }, null, null)
+            }
+
+            root.optJSONObject("promptFeedback")?.optString("blockReason")?.takeIf { it.isNotBlank() }?.let {
+                return AiHttpResult(status, null, "Permintaan diblokir filter keamanan Gemini ($it).", null)
+            }
+            val candidate = root.optJSONArray("candidates")?.optJSONObject(0)
+            val parts = candidate?.optJSONObject("content")?.optJSONArray("parts")
+            // Gabungkan semua bagian teks jawaban; lewati ringkasan proses berpikir (thought = true).
+            val text = buildString {
+                if (parts != null) for (i in 0 until parts.length()) {
+                    val part = parts.optJSONObject(i) ?: continue
+                    if (part.optBoolean("thought", false)) continue
+                    append(part.optString("text", ""))
+                }
+            }.let { redactSecrets(it).trim() }
+
+            if (text.isBlank()) {
+                val reason = candidate?.optString("finishReason").orEmpty()
+                return AiHttpResult(status, null, "AI tidak mengembalikan jawaban${if (reason.isNotBlank()) " ($reason)" else ""}.", null)
+            }
+            return AiHttpResult(status, text, null, null)
+        } finally {
+            conn.disconnect()
+        }
     }
 
     data class AiNoteDraft(
@@ -361,7 +411,7 @@ object NoteAiAssistant {
             if (courseHint.isNotBlank()) appendLine("Mata Kuliah: $courseHint")
             if (fallbackTitle.isNotBlank()) appendLine("Nama File/Sumber: $fallbackTitle")
             if (rawSourceText.isNotBlank()) {
-                appendLine("\nIsi Teks Dokumen/Hasil Bacaan:\n${rawSourceText.take(6500)}")
+                appendLine("\nIsi Teks Dokumen/Hasil Bacaan:\n${rawSourceText.take(11_000)}")
             } else {
                 appendLine("\nBaca langsung tulisan pada gambar terlampir dan tuliskan catatannya.")
             }
@@ -370,7 +420,7 @@ object NoteAiAssistant {
         val aiResponse = requestRemoteCompletion(
             systemPrompt = sysPrompt,
             userPrompt = userPrompt,
-            preferredMaxTokens = 550,
+            preferredMaxTokens = 4096,
             base64JpegImage = base64JpegImage
         ) ?: return null
 
@@ -451,11 +501,26 @@ object NoteAiAssistant {
         title: String,
         body: String,
         isEn: Boolean,
-        fallback: NoteSummary
+        fallback: NoteSummary,
+        context: android.content.Context? = null
     ): NoteSummary {
         val cleanBody = sanitizeInput(body, 6_500)
-        if (!isRemoteApiConfigured() || cleanBody.length < 20) return fallback
+        if (cleanBody.length < 20) return fallback
         val cleanTitle = sanitizeInput(title, 150).ifBlank { if (isEn) "Class Note" else "Catatan Kuliah" }
+
+        // Jika layanan NotebookLM aktif di Docker / server lokal, sinkronkan materi dan ambil ringkasan resmi NotebookLM
+        if (context != null && NotebookLmRestApiClient.isHealthy(context)) {
+            val notebookId = NotebookLmRestApiClient.ensureNotebook(context, cleanTitle).getOrNull()
+            if (notebookId != null) {
+                NotebookLmRestApiClient.syncTextSource(context, notebookId, cleanTitle, cleanBody)
+                val nlmSummary = NotebookLmRestApiClient.getNotebookSummary(context, notebookId).getOrNull()
+                if (!nlmSummary.isNullOrBlank()) {
+                    return fallback.copy(overview = nlmSummary.trim())
+                }
+            }
+        }
+
+        if (!isRemoteApiConfigured()) return fallback
         val sysPrompt = if (isEn) {
             "Summarize this student lecture note focusing strictly on the academic subject matter (concepts, theories, formulas, mechanisms, and examples). " +
                 "Completely IGNORE administrative document metadata such as university/campus names, publisher info, ISBN, document creation/revision schedules, syllabus tables, or lecturer names. " +
@@ -465,7 +530,7 @@ object NoteAiAssistant {
                 "ABAIKAN sama sekali informasi administrasi dokumen seperti nama kampus/universitas, penerbit, jadwal ditulis/revisi, kode dokumen, tabel RPS, atau nama penyusun. " +
                 "Tulis 1 paragraf ringkasan yang mudah dipahami mahasiswa di baris pertama, lalu 3-4 baris diawali 'POIN: ' untuk poin materi penting, lalu 2-3 baris diawali 'ISTILAH: nama istilah | penjelasan singkat'. Jangan gunakan karakter em dash."
         }
-        val raw = requestRemoteCompletion(sysPrompt, "Topik: $cleanTitle\nIsi Materi:\n$cleanBody", preferredMaxTokens = 320) ?: return fallback
+        val raw = requestRemoteCompletion(sysPrompt, "Topik: $cleanTitle\nIsi Materi:\n$cleanBody") ?: return fallback
         val lines = raw.lines().map { it.trim() }.filter { it.isNotBlank() }
         val points = mutableListOf<String>()
         val terms = mutableListOf<Pair<String, String>>()
@@ -512,7 +577,7 @@ object NoteAiAssistant {
             "Buat 4 kartu kuis latihan ujian berdasarkan konsep inti materi kuliah di catatan ini (abaikan nama kampus, penerbit, atau jadwal dokumen). " +
                 "Tulis tiap baris dengan format persis: Q: <pertanyaan konsep> | A: <jawaban singkat & jelas>"
         }
-        val raw = requestRemoteCompletion(sysPrompt, "Topik: $cleanTitle\nMateri:\n$cleanBody", preferredMaxTokens = 260) ?: return fallback
+        val raw = requestRemoteCompletion(sysPrompt, "Topik: $cleanTitle\nMateri:\n$cleanBody") ?: return fallback
         val parsed = mutableListOf<QuizQuestion>()
         raw.lines().forEachIndexed { idx, line ->
             val trimmed = line.trim().removePrefix("-").removePrefix("•").trim()
@@ -745,7 +810,8 @@ object NoteAiAssistant {
         noteTitle: String,
         noteBody: String,
         history: List<AiChatMessageRow>,
-        isEn: Boolean
+        isEn: Boolean,
+        context: android.content.Context? = null
     ): Pair<String, String> {
         val cleanQuery = sanitizeInput(query, 600)
         val cleanTitle = sanitizeInput(noteTitle, 150).ifBlank { if (isEn) "Class Note" else "Catatan Kuliah" }
@@ -764,6 +830,18 @@ object NoteAiAssistant {
 
         val qLower = cleanQuery.lowercase()
         val bestQuote = findBestMatchingSnippet(qLower, sentences)
+
+        // Coba tanyakan ke layanan NotebookLM (Docker / REST API) jika aktif
+        if (context != null && NotebookLmRestApiClient.isHealthy(context)) {
+            val notebookId = NotebookLmRestApiClient.ensureNotebook(context, cleanTitle).getOrNull()
+            if (notebookId != null) {
+                NotebookLmRestApiClient.syncTextSource(context, notebookId, cleanTitle, cleanBody)
+                val nlmAnswer = NotebookLmRestApiClient.askNotebookChat(context, notebookId, cleanQuery).getOrNull()
+                if (!nlmAnswer.isNullOrBlank()) {
+                    return nlmAnswer to (bestQuote ?: sentences.firstOrNull().orEmpty())
+                }
+            }
+        }
 
         if (isRemoteApiConfigured()) {
             val historyContext = history.takeLast(6).joinToString("\n") { msg ->

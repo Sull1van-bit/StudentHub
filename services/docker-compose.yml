@@ -1,0 +1,15 @@
+services:
+  notebooklm-api:
+    build:
+      context: ./notebooklm-rest-api
+      dockerfile: Dockerfile
+    container_name: studenthub-notebooklm-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - NOTEBOOKLM_REST_API_KEY=${NOTEBOOKLM_REST_API_KEY:-}
+      - NOTEBOOKLM_STORAGE_PATH=/root/.notebooklm/storage_state.json
+      - NOTEBOOKLM_AUTH_JSON=${NOTEBOOKLM_AUTH_JSON:-}
+    volumes:
+      - ./data/notebooklm:/root/.notebooklm

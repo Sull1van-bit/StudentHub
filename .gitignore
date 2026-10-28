@@ -19,3 +19,6 @@ local.properties
 *.keystore
 .kotlin/
 *.zip
+services/.venv/
+services/data/
+services/**/__pycache__/

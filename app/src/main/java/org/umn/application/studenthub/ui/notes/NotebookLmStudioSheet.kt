@@ -69,6 +69,12 @@ fun NotebookLmStudioSheet(
     var selectedTab by rememberSaveable { mutableIntStateOf(initialTab.coerceIn(0, 4)) }
     var pendingChatPrompt by rememberSaveable { mutableStateOf<String?>(null) }
     var feedbackBanner by remember { mutableStateOf<String?>(null) }
+    var isNlmConnected by remember { mutableStateOf(false) }
+    var showNlmConfigDialog by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        isNlmConnected = NotebookLmRestApiClient.isHealthy(context)
+    }
 
     var summary by remember(noteTitle, noteBody, isEn) {
         mutableStateOf(NoteAiAssistant.generateSummary(noteTitle, noteBody, isEn))
@@ -78,7 +84,7 @@ fun NotebookLmStudioSheet(
     }
     LaunchedEffect(noteTitle, noteBody, isEn) {
         if (noteBody.isNotBlank()) {
-            summary = NoteAiAssistant.enrichSummaryRemote(noteTitle, noteBody, isEn, summary)
+            summary = NoteAiAssistant.enrichSummaryRemote(noteTitle, noteBody, isEn, summary, context = context)
             quiz = NoteAiAssistant.enrichQuizRemote(noteTitle, noteBody, isEn, quiz)
         }
     }
@@ -132,14 +138,45 @@ fun NotebookLmStudioSheet(
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold
                     )
-                    Text(
-                        text = (noteCourse.ifBlank { lString("Umum", "General") }) + " • " +
-                            (noteTitle.ifBlank { lString("Catatan Tanpa Judul", "Untitled Note") }),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = (noteCourse.ifBlank { lString("Umum", "General") }) + " • " +
+                                (noteTitle.ifBlank { lString("Catatan Tanpa Judul", "Untitled Note") }),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isNlmConnected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.clickable { showNlmConfigDialog = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .background(
+                                            if (isNlmConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                            shape = androidx.compose.foundation.shape.CircleShape
+                                        )
+                                )
+                                Text(
+                                    text = if (isNlmConnected) "NotebookLM REST" else "Gemini Cloud",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isNlmConnected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.Close, contentDescription = lString("Tutup", "Close"))
@@ -285,6 +322,25 @@ fun NotebookLmStudioSheet(
                 }
             }
         }
+    }
+
+    if (showNlmConfigDialog) {
+        NotebookLmConfigDialog(
+            context = context,
+            initialUrl = NotebookLmRestApiClient.getBaseUrl(context),
+            initialApiKey = NotebookLmRestApiClient.getApiKey(context),
+            isCurrentlyConnected = isNlmConnected,
+            isEn = isEn,
+            onDismiss = { showNlmConfigDialog = false },
+            onSaved = { newUrl, newKey ->
+                NotebookLmRestApiClient.setBaseUrl(context, newUrl)
+                NotebookLmRestApiClient.setApiKey(context, newKey)
+                showNlmConfigDialog = false
+            },
+            onStatusChanged = { connected ->
+                isNlmConnected = connected
+            }
+        )
     }
 }
 
@@ -733,6 +789,7 @@ private fun PersistentNoteChatTabContent(
     onPendingPromptConsumed: () -> Unit,
     isEn: Boolean
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var sessions by remember(noteId) {
         mutableStateOf(runCatching { database.aiChatSessions(noteId) }.getOrDefault(emptyList()))
@@ -786,7 +843,8 @@ private fun PersistentNoteChatTabContent(
                     noteTitle = noteTitle,
                     noteBody = noteBody,
                     history = messages,
-                    isEn = isEn
+                    isEn = isEn,
+                    context = context
                 )
                 database.addAiChatMessage(targetSessionId, "AI", replyText, quote)
                 messages = database.aiChatMessages(targetSessionId)
@@ -1543,3 +1601,156 @@ private fun copyToClipboard(context: Context, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     cm?.setPrimaryClip(ClipData.newPlainText("StudentHub Note Summary", text))
 }
+
+@Composable
+private fun NotebookLmConfigDialog(
+    context: Context,
+    initialUrl: String,
+    initialApiKey: String,
+    isCurrentlyConnected: Boolean,
+    isEn: Boolean,
+    onDismiss: () -> Unit,
+    onSaved: (String, String) -> Unit,
+    onStatusChanged: (Boolean) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var urlInput by rememberSaveable { mutableStateOf(initialUrl) }
+    var apiKeyInput by rememberSaveable { mutableStateOf(initialApiKey) }
+    var isTesting by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    var isSuccess by remember { mutableStateOf(isCurrentlyConnected) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = lString("Layanan NotebookLM", "NotebookLM Service"),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = lString(
+                        "Layanan REST API mandiri (microservice) berbasis gnh1201/notebooklm-rest-api via Docker atau server lokal.",
+                        "Independent REST API microservice powered by gnh1201/notebooklm-rest-api via Docker or local server."
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isSuccess) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(
+                                    if (isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                    shape = androidx.compose.foundation.shape.CircleShape
+                                )
+                        )
+                        Text(
+                            text = if (isSuccess)
+                                lString("Layanan Terhubung (Aktif)", "Service Connected (Active)")
+                            else
+                                lString("Menggunakan Gemini Cloud Langsung", "Using Direct Gemini Cloud"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isSuccess) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = urlInput,
+                    onValueChange = { urlInput = it },
+                    label = { Text(lString("URL Layanan (Base URL)", "Service Base URL")) },
+                    placeholder = { Text("http://10.0.2.2:8000") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Text(
+                    text = lString(
+                        "Gunakan http://10.0.2.2:8000 untuk Android Emulator, atau alamat IP laptop (misal http://192.168.1.15:8000) jika menggunakan HP fisik.",
+                        "Use http://10.0.2.2:8000 on Android Emulator, or your computer's LAN IP (e.g. http://192.168.1.15:8000) on a real device."
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = apiKeyInput,
+                    onValueChange = { apiKeyInput = it },
+                    label = { Text(lString("API Key Layanan (Opsional)", "Service API Key (Optional)")) },
+                    placeholder = { Text("NOTEBOOKLM_REST_API_KEY") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                testResult?.let { res ->
+                    Text(
+                        text = res,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        isTesting = true
+                        testResult = if (isEn) "Testing connection to service..." else "Menguji koneksi ke layanan..."
+                        scope.launch {
+                            NotebookLmRestApiClient.setBaseUrl(context, urlInput)
+                            NotebookLmRestApiClient.setApiKey(context, apiKeyInput)
+                            val ok = NotebookLmRestApiClient.isHealthy(context, forceRefresh = true)
+                            isTesting = false
+                            isSuccess = ok
+                            onStatusChanged(ok)
+                            testResult = if (ok) {
+                                if (isEn) "Successfully connected to NotebookLM REST API!" else "Berhasil terhubung ke NotebookLM REST API!"
+                            } else {
+                                if (isEn) "Could not connect. Ensure Docker container or uvicorn server is running on port 8000." else "Gagal terhubung. Pastikan container Docker atau server uvicorn sudah berjalan di port 8000."
+                            }
+                        }
+                    },
+                    enabled = !isTesting && urlInput.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isTesting) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(lString("Uji Koneksi", "Test Connection"))
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSaved(urlInput, apiKeyInput)
+                }
+            ) {
+                Text(lString("Simpan", "Save"))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(lString("Tutup", "Close"))
+            }
+        }
+    )
+}
+
