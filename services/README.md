@@ -58,6 +58,12 @@ Untuk menghentikan:
 ./services/run-service.sh docker-stop
 ```
 
+> [!TIP]
+> **Jika muncul error `failed to connect to the docker API at unix:///var/run/docker.sock`:**
+> 1. **Docker service belum aktif**: Jalankan `sudo systemctl start docker`.
+> 2. **Jika menggunakan Fedora / Podman**: Jalankan `systemctl --user enable --now podman.socket` lalu `export DOCKER_HOST="unix:///run/user/$(id -u)/podman/podman.sock"`, atau cukup gunakan script `./services/run-service.sh docker` (script ini otomatis mendeteksi Podman).
+> 3. **Atau tanpa Docker sama sekali**: Gunakan Opsi B (Python langsung) di bawah ini.
+
 ### Opsi B: Menjalankan Langsung via Python (Tanpa Docker)
 
 ```bash

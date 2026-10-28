@@ -8,6 +8,48 @@ mkdir -p "$DIR/data/notebooklm"
 
 COMMAND="${1:-docker}"
 
+ensure_container_engine() {
+  # 1. Coba periksa apakah docker daemon standar aktif
+  if docker info >/dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+    return 0
+  fi
+
+  # 2. Jika di Fedora/Linux dengan Podman, gunakan podman.socket (rootless tanpa sudo)
+  local uid
+  uid=$(id -u)
+  local podman_sock="/run/user/${uid}/podman/podman.sock"
+  if command -v podman >/dev/null 2>&1; then
+    systemctl --user start podman.socket >/dev/null 2>&1 || true
+    if [ -S "$podman_sock" ]; then
+      export DOCKER_HOST="unix://${podman_sock}"
+      if docker compose version >/dev/null 2>&1; then
+        COMPOSE_CMD="docker compose"
+        return 0
+      elif podman compose version >/dev/null 2>&1; then
+        COMPOSE_CMD="podman compose"
+        return 0
+      fi
+    fi
+  fi
+
+  echo ""
+  echo "⚠️  Docker daemon belum aktif (docker.sock tidak ditemukan)."
+  echo "Pilih salah satu solusi praktis berikut:"
+  echo ""
+  echo "  A) Aktifkan Docker service (butuh sudo):"
+  echo "     sudo systemctl start docker"
+  echo ""
+  echo "  B) Aktifkan Podman socket (tanpa sudo di Fedora/Linux):"
+  echo "     systemctl --user enable --now podman.socket"
+  echo "     export DOCKER_HOST=\"unix:///run/user/\$(id -u)/podman/podman.sock\""
+  echo ""
+  echo "  C) Jalankan langsung menggunakan Python lokal (paling cepat & ringan):"
+  echo "     ./services/run-service.sh local"
+  echo ""
+  exit 1
+}
+
 case "$COMMAND" in
   login)
     echo "=== Menjalankan otentikasi Google NotebookLM (notebooklm login) ==="
@@ -26,21 +68,18 @@ case "$COMMAND" in
     ;;
 
   docker)
-    echo "=== Menjalankan NotebookLM REST API via Docker Compose ==="
-    if command -v docker >/dev/null 2>&1; then
-      docker compose up --build -d
-      echo "Layanan berjalan di http://localhost:8000"
-      echo "Dokumentasi API Swagger: http://localhost:8000/docs"
-      echo "Cek status: docker compose logs -f"
-    else
-      echo "Error: docker tidak ditemukan. Silakan gunakan './run-service.sh local'"
-      exit 1
-    fi
+    echo "=== Menjalankan NotebookLM REST API via Container ==="
+    ensure_container_engine
+    $COMPOSE_CMD up --build -d
+    echo "Layanan berjalan di http://localhost:8000"
+    echo "Dokumentasi API Swagger: http://localhost:8000/docs"
+    echo "Cek status: $COMPOSE_CMD logs -f"
     ;;
 
   docker-stop)
-    echo "=== Menghentikan NotebookLM REST API (Docker) ==="
-    docker compose down
+    echo "=== Menghentikan NotebookLM REST API (Container) ==="
+    ensure_container_engine
+    $COMPOSE_CMD down
     ;;
 
   local)
